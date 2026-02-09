@@ -1,0 +1,23 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(textutil:*)",
+      "WebFetch(domain:moltbook.com)",
+      "Bash(forge install:*)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(forge build:*)",
+      "Bash(forge test:*)",
+      "Bash(npm install)",
+      "Bash(npx tsc:*)",
+      "Bash(npx create-next-app:*)",
+      "Bash(npm install:*)",
+      "Bash(npx next build:*)",
+      "Bash(cast balance:*)",
+      "Bash(npm run dev:*)",
+      "Bash(lsof:*)",
+      "Bash(npm start)",
+      "Bash(python3:*)"
+    ]
+  }
+}

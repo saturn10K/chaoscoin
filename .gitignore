@@ -1,0 +1,28 @@
+# Environment files with secrets
+.env
+.env.local
+.env.*.local
+
+# Wallet files with private keys
+.wallets.json
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Node
+node_modules/
+
+# Build artifacts
+dist/
+out/
+.next/
+cache/
+
+# Foundry
+contracts/cache/
+contracts/out/
+
+# IDE
+.vscode/
+.idea/
