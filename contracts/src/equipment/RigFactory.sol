@@ -53,6 +53,11 @@ contract RigFactory is ERC721, Ownable {
     TokenBurner public tokenBurner;
     address public cosmicEngine;
     address public treasury;
+    address public marketplace;
+    address public sabotageContract;
+
+    // Dynamic pricing: track how many rigs exist per tier
+    mapping(uint256 => uint256) public totalRigsByTier;
 
     error OnlyAgentRegistry();
     error OnlyCosmicEngine();
@@ -108,6 +113,26 @@ contract RigFactory is ERC721, Ownable {
         cosmicEngine = _cosmicEngine;
     }
 
+    function setMarketplace(address _marketplace) external onlyOwner {
+        marketplace = _marketplace;
+    }
+
+    function setSabotageContract(address _sabotage) external onlyOwner {
+        sabotageContract = _sabotage;
+    }
+
+    /// @notice Dynamic pricing: cost increases as more agents own this tier
+    function getEffectiveCost(uint8 tier) public view returns (uint256) {
+        uint256 baseCost = rigConfigs[tier].cost;
+        if (baseCost == 0) return 0; // T0 is free
+        uint256 scale;
+        if (tier == 1) scale = Constants.DYNAMIC_PRICE_SCALE_T1;
+        else if (tier == 2) scale = Constants.DYNAMIC_PRICE_SCALE_T2;
+        else if (tier == 3) scale = Constants.DYNAMIC_PRICE_SCALE_T3;
+        else scale = Constants.DYNAMIC_PRICE_SCALE_T4;
+        return baseCost * (scale + totalRigsByTier[tier]) / scale;
+    }
+
     // === Mint & Purchase ===
 
     function mintPotatoRig(uint256 agentId, address operator) external {
@@ -147,15 +172,18 @@ contract RigFactory is ERC721, Ownable {
         if (phase == 2 && tier > 3) revert PhaseLocked();
 
         RigConfig memory config = rigConfigs[tier];
-        if (chaosToken.balanceOf(agent.operator) < config.cost) revert InsufficientBalance();
+        uint256 effectiveCost = getEffectiveCost(tier);
+        if (chaosToken.balanceOf(agent.operator) < effectiveCost) revert InsufficientBalance();
+
+        totalRigsByTier[tier]++;
 
         // Transfer and burn atomically
-        chaosToken.transferFrom(agent.operator, address(this), config.cost);
-        uint256 burnAmount = (config.cost * Constants.RIG_PURCHASE_BURN_RATE) / 100;
+        chaosToken.transferFrom(agent.operator, address(this), effectiveCost);
+        uint256 burnAmount = (effectiveCost * Constants.RIG_PURCHASE_BURN_RATE) / 100;
         chaosToken.burn(burnAmount);
         tokenBurner.recordBurn(burnAmount, Constants.BURN_SOURCE_RIG_PURCHASE);
 
-        uint256 treasuryAmount = config.cost - burnAmount;
+        uint256 treasuryAmount = effectiveCost - burnAmount;
         if (treasuryAmount > 0) {
             chaosToken.transfer(treasury, treasuryAmount);
         }
@@ -176,7 +204,7 @@ contract RigFactory is ERC721, Ownable {
 
         agentRigs[agentId].push(rigId);
 
-        emit RigPurchased(rigId, agentId, tier, config.cost, burnAmount);
+        emit RigPurchased(rigId, agentId, tier, effectiveCost, burnAmount);
     }
 
     // === Equip / Unequip ===
@@ -452,5 +480,73 @@ contract RigFactory is ERC721, Ownable {
                 break;
             }
         }
+    }
+
+    function _recalcAgentHashrate(uint256 agentId) internal {
+        uint256 newHashrate = calculateEffectiveHashrate(agentId);
+        agentRegistry.updateHashrate(agentId, newHashrate);
+    }
+
+    // === Marketplace Transfer ===
+
+    event RigTransferred(uint256 indexed rigId, uint256 indexed fromAgent, uint256 indexed toAgent);
+
+    function transferRig(uint256 rigId, uint256 fromAgent, uint256 toAgent) external {
+        require(msg.sender == marketplace, "Only marketplace");
+        Rig storage rig = rigs[rigId];
+        require(rig.ownerAgentId == fromAgent, "Not owner");
+
+        // Remove from seller's array
+        uint256[] storage fromRigs = agentRigs[fromAgent];
+        for (uint256 i = 0; i < fromRigs.length; i++) {
+            if (fromRigs[i] == rigId) {
+                fromRigs[i] = fromRigs[fromRigs.length - 1];
+                fromRigs.pop();
+                break;
+            }
+        }
+
+        // Unequip if active before transfer
+        bool wasActive = rig.active;
+        if (wasActive) {
+            rig.active = false;
+        }
+
+        // Transfer ownership
+        rig.ownerAgentId = toAgent;
+        agentRigs[toAgent].push(rigId);
+
+        // Transfer NFT
+        AgentRegistry.Agent memory fromAg = agentRegistry.getAgent(fromAgent);
+        AgentRegistry.Agent memory toAg = agentRegistry.getAgent(toAgent);
+        _transfer(fromAg.operator, toAg.operator, rigId);
+
+        // Recalculate both agents' hashrate
+        _recalcAgentHashrate(fromAgent);
+        _recalcAgentHashrate(toAgent);
+
+        emit RigTransferred(rigId, fromAgent, toAgent);
+    }
+
+    // === Sabotage Damage ===
+
+    event RigsSabotaged(uint256 indexed agentId, uint256 damagePercent);
+
+    function applySabotageDamage(uint256 agentId, uint256 damagePercent) external {
+        require(msg.sender == sabotageContract, "Only sabotage");
+        uint256[] memory rigIds = agentRigs[agentId];
+        for (uint256 i = 0; i < rigIds.length; i++) {
+            if (rigIds[i] == 0) continue;
+            Rig storage rig = rigs[rigIds[i]];
+            if (!rig.active || rig.durability == 0) continue;
+            uint256 damage = (rig.durability * damagePercent) / 100;
+            if (damage >= rig.durability) {
+                rig.durability = 0;
+            } else {
+                rig.durability -= damage;
+            }
+        }
+        _recalcAgentHashrate(agentId);
+        emit RigsSabotaged(agentId, damagePercent);
     }
 }

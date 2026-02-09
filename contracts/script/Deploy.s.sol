@@ -12,8 +12,24 @@ import "../src/cosmic/EraManager.sol";
 import "../src/cosmic/ZoneManager.sol";
 import "../src/cosmic/ShieldManager.sol";
 import "../src/cosmic/CosmicEngine.sol";
+import "../src/marketplace/Marketplace.sol";
+import "../src/sabotage/Sabotage.sol";
 
 contract Deploy is Script {
+    // Store deployed addresses for cross-function access
+    ChaosToken public chaosToken;
+    TokenBurner public tokenBurner;
+    EraManager public eraManager;
+    ZoneManager public zoneManager;
+    AgentRegistry public agentRegistry;
+    MiningEngine public miningEngine;
+    FacilityManager public facilityManager;
+    RigFactory public rigFactory;
+    ShieldManager public shieldManager;
+    CosmicEngine public cosmicEngine;
+    Marketplace public marketplace;
+    Sabotage public sabotage;
+
     function run() external {
         uint256 deployerPrivateKey = vm.envUint("PRIVATE_KEY");
         address deployer = vm.addr(deployerPrivateKey);
@@ -22,112 +38,96 @@ contract Deploy is Script {
 
         vm.startBroadcast(deployerPrivateKey);
 
-        // ===== Phase 1: Deploy contracts in dependency order =====
+        _deployCore(treasury);
+        _deployEquipment(treasury);
+        _deployCosmic(treasury);
+        _deployMarketplaceSabotage(treasury);
+        _wireContracts(registrar);
 
-        // 1. ChaosToken (no deps)
-        ChaosToken chaosToken = new ChaosToken();
+        vm.stopBroadcast();
 
-        // 2. TokenBurner (depends on ChaosToken)
-        TokenBurner tokenBurner = new TokenBurner(address(chaosToken));
+        _logAddresses(deployer, treasury, registrar);
+    }
 
-        // 3. EraManager (no deps, reads block.number)
-        EraManager eraManager = new EraManager();
-
-        // 4. ZoneManager (no deps)
-        ZoneManager zoneManager = new ZoneManager();
-
-        // 5. AgentRegistry (depends on ZoneManager)
-        AgentRegistry agentRegistry = new AgentRegistry(address(zoneManager));
-
-        // 6. MiningEngine (depends on ChaosToken, AgentRegistry, TokenBurner, EraManager)
-        MiningEngine miningEngine = new MiningEngine(
-            address(chaosToken),
-            address(agentRegistry),
-            address(tokenBurner),
-            address(eraManager)
+    function _deployCore(address treasury) internal {
+        chaosToken = new ChaosToken();
+        tokenBurner = new TokenBurner(address(chaosToken));
+        eraManager = new EraManager();
+        zoneManager = new ZoneManager();
+        agentRegistry = new AgentRegistry(address(zoneManager));
+        miningEngine = new MiningEngine(
+            address(chaosToken), address(agentRegistry),
+            address(tokenBurner), address(eraManager)
         );
+    }
 
-        // 7. FacilityManager (depends on ChaosToken, AgentRegistry, TokenBurner)
-        FacilityManager facilityManager = new FacilityManager(
-            address(chaosToken),
-            address(agentRegistry),
-            address(tokenBurner),
-            treasury
+    function _deployEquipment(address treasury) internal {
+        facilityManager = new FacilityManager(
+            address(chaosToken), address(agentRegistry),
+            address(tokenBurner), treasury
         );
-
-        // 8. RigFactory (depends on ChaosToken, AgentRegistry, FacilityManager, TokenBurner, ZoneManager)
-        RigFactory rigFactory = new RigFactory(
-            address(chaosToken),
-            address(agentRegistry),
-            address(facilityManager),
-            address(tokenBurner),
-            address(zoneManager),
-            treasury
+        rigFactory = new RigFactory(
+            address(chaosToken), address(agentRegistry),
+            address(facilityManager), address(tokenBurner),
+            address(zoneManager), treasury
         );
-
-        // 9. ShieldManager (depends on ChaosToken, AgentRegistry, TokenBurner)
-        ShieldManager shieldManager = new ShieldManager(
-            address(chaosToken),
-            address(agentRegistry),
-            address(tokenBurner),
-            treasury
+        shieldManager = new ShieldManager(
+            address(chaosToken), address(agentRegistry),
+            address(tokenBurner), treasury
         );
+    }
 
-        // 10. CosmicEngine (depends on everything)
-        CosmicEngine cosmicEngine = new CosmicEngine(
-            address(agentRegistry),
-            address(rigFactory),
-            address(facilityManager),
-            address(shieldManager),
-            address(eraManager),
-            address(zoneManager),
-            address(chaosToken),
-            address(tokenBurner)
+    function _deployCosmic(address /*treasury*/) internal {
+        cosmicEngine = new CosmicEngine(
+            address(agentRegistry), address(rigFactory),
+            address(facilityManager), address(shieldManager),
+            address(eraManager), address(zoneManager),
+            address(chaosToken), address(tokenBurner)
         );
+    }
 
-        // ===== Phase 2: Cross-wiring =====
+    function _deployMarketplaceSabotage(address treasury) internal {
+        marketplace = new Marketplace(
+            address(chaosToken), address(agentRegistry),
+            address(rigFactory), address(tokenBurner), treasury
+        );
+        sabotage = new Sabotage(
+            address(chaosToken), address(agentRegistry),
+            address(rigFactory), address(facilityManager),
+            address(shieldManager), address(tokenBurner), treasury
+        );
+    }
 
-        // ChaosToken: grant minter role to MiningEngine
+    function _wireContracts(address registrar) internal {
         chaosToken.setMinter(address(miningEngine));
 
-        // TokenBurner: authorize all burner contracts
         tokenBurner.setAuthorizedBurner(address(miningEngine), true);
         tokenBurner.setAuthorizedBurner(address(rigFactory), true);
         tokenBurner.setAuthorizedBurner(address(facilityManager), true);
         tokenBurner.setAuthorizedBurner(address(shieldManager), true);
+        tokenBurner.setAuthorizedBurner(address(marketplace), true);
+        tokenBurner.setAuthorizedBurner(address(sabotage), true);
 
-        // ZoneManager: set AgentRegistry as authorized caller
         zoneManager.setAgentRegistry(address(agentRegistry));
-
-        // AgentRegistry: wire up all dependent contracts
         agentRegistry.setRegistrar(registrar);
         agentRegistry.setRigFactory(address(rigFactory));
         agentRegistry.setFacilityManager(address(facilityManager));
         agentRegistry.setMiningEngine(address(miningEngine));
+        agentRegistry.setShieldManager(address(shieldManager));
+        agentRegistry.setCosmicEngine(address(cosmicEngine));
 
-        // RigFactory: set CosmicEngine for damage application
         rigFactory.setCosmicEngine(address(cosmicEngine));
+        rigFactory.setMarketplace(address(marketplace));
+        rigFactory.setSabotageContract(address(sabotage));
 
-        // ShieldManager: set CosmicEngine for charge consumption
         shieldManager.setCosmicEngine(address(cosmicEngine));
+        facilityManager.setSabotageContract(address(sabotage));
+    }
 
-        vm.stopBroadcast();
-
-        // ===== Log deployment addresses =====
-        console.log("=== Chaoscoin MVP Deployment ===");
+    function _logAddresses(address deployer, address treasury, address registrar) internal pure {
+        console.log("=== Chaoscoin Deployment ===");
         console.log("Deployer:        ", deployer);
         console.log("Treasury:        ", treasury);
         console.log("Registrar:       ", registrar);
-        console.log("---");
-        console.log("ChaosToken:      ", address(chaosToken));
-        console.log("TokenBurner:     ", address(tokenBurner));
-        console.log("EraManager:      ", address(eraManager));
-        console.log("ZoneManager:     ", address(zoneManager));
-        console.log("AgentRegistry:   ", address(agentRegistry));
-        console.log("MiningEngine:    ", address(miningEngine));
-        console.log("FacilityManager: ", address(facilityManager));
-        console.log("RigFactory:      ", address(rigFactory));
-        console.log("ShieldManager:   ", address(shieldManager));
-        console.log("CosmicEngine:    ", address(cosmicEngine));
     }
 }

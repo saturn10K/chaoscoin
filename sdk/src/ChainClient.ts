@@ -25,6 +25,8 @@ const ABIS = {
     "function calculateEffectiveHashrate(uint256 agentId) external view returns (uint256)",
     "function getUsedPower(uint256 agentId) external view returns (uint32)",
     "function getActiveRigCount(uint256 agentId) external view returns (uint256)",
+    "function getEffectiveCost(uint8 tier) external view returns (uint256)",
+    "function totalRigsByTier(uint256 tier) external view returns (uint256)",
   ],
   facilityManager: [
     "function upgrade(uint256 agentId) external",
@@ -56,6 +58,24 @@ const ABIS = {
     "function getZoneAgentCount(uint8 zone) external view returns (uint256)",
     "function getZoneDamageMultiplier(uint8 zone, uint8 eventType) external view returns (uint16)",
   ],
+  marketplace: [
+    "function listRig(uint256 agentId, uint256 rigId, uint256 price) external",
+    "function buyRig(uint256 listingId, uint256 buyerAgentId) external",
+    "function cancelListing(uint256 listingId) external",
+    "function getListing(uint256 listingId) external view returns (tuple(uint256 rigId, uint256 sellerAgentId, uint256 price, bool active))",
+    "function getActiveListingForRig(uint256 rigId) external view returns (uint256, tuple(uint256 rigId, uint256 sellerAgentId, uint256 price, bool active))",
+    "function nextListingId() external view returns (uint256)",
+  ],
+  sabotage: [
+    "function facilityRaid(uint256 attackerAgent, uint256 targetAgent) external",
+    "function rigJam(uint256 attackerAgent, uint256 targetAgent) external",
+    "function gatherIntel(uint256 attackerAgent, uint256 targetAgent) external",
+    "function getCooldownRemaining(uint256 attackerAgent, uint256 targetAgent) external view returns (uint256)",
+    "function totalFacilityRaids() external view returns (uint256)",
+    "function totalRigJams() external view returns (uint256)",
+    "function totalIntelOps() external view returns (uint256)",
+    "function totalBurnedBySabotage() external view returns (uint256)",
+  ],
 };
 
 export interface ContractAddresses {
@@ -67,6 +87,8 @@ export interface ContractAddresses {
   shieldManager: string;
   cosmicEngine: string;
   zoneManager?: string;
+  marketplace?: string;
+  sabotage?: string;
 }
 
 export interface ChainClientConfig {
@@ -93,6 +115,8 @@ export class ChainClient {
   public chaosToken: ethers.Contract;
   public cosmicEngine: ethers.Contract;
   public zoneManager: ethers.Contract | null;
+  public marketplace: ethers.Contract | null;
+  public sabotageContract: ethers.Contract | null;
 
   constructor(config: ChainClientConfig) {
     // Use static network to avoid unnecessary eth_chainId calls (helps with rate limits)
@@ -144,6 +168,20 @@ export class ChainClient {
       ? new ethers.Contract(
           config.addresses.zoneManager,
           ABIS.zoneManager,
+          this.wallet
+        )
+      : null;
+    this.marketplace = config.addresses.marketplace
+      ? new ethers.Contract(
+          config.addresses.marketplace,
+          ABIS.marketplace,
+          this.wallet
+        )
+      : null;
+    this.sabotageContract = config.addresses.sabotage
+      ? new ethers.Contract(
+          config.addresses.sabotage,
+          ABIS.sabotage,
           this.wallet
         )
       : null;
@@ -307,5 +345,86 @@ export class ChainClient {
 
   async getShield(agentId: number): Promise<any> {
     return this.shieldManager.getShield(agentId);
+  }
+
+  // === Dynamic Pricing ===
+
+  async getEffectiveRigCost(tier: number): Promise<bigint> {
+    return this.rigFactory.getEffectiveCost(tier);
+  }
+
+  async getTotalRigsByTier(tier: number): Promise<number> {
+    return Number(await this.rigFactory.totalRigsByTier(tier));
+  }
+
+  // === Marketplace ===
+
+  async listRig(agentId: number, rigId: number, price: bigint): Promise<ethers.TransactionReceipt> {
+    if (!this.marketplace) throw new Error("Marketplace not configured");
+    const tx = await this.marketplace.listRig(agentId, rigId, price);
+    return tx.wait();
+  }
+
+  async buyRig(listingId: number, buyerAgentId: number): Promise<ethers.TransactionReceipt> {
+    if (!this.marketplace) throw new Error("Marketplace not configured");
+    const tx = await this.marketplace.buyRig(listingId, buyerAgentId);
+    return tx.wait();
+  }
+
+  async cancelListing(listingId: number): Promise<ethers.TransactionReceipt> {
+    if (!this.marketplace) throw new Error("Marketplace not configured");
+    const tx = await this.marketplace.cancelListing(listingId);
+    return tx.wait();
+  }
+
+  async getListing(listingId: number): Promise<any> {
+    if (!this.marketplace) throw new Error("Marketplace not configured");
+    return this.marketplace.getListing(listingId);
+  }
+
+  // === Sabotage ===
+
+  async facilityRaid(attackerAgent: number, targetAgent: number): Promise<ethers.TransactionReceipt> {
+    if (!this.sabotageContract) throw new Error("Sabotage not configured");
+    const tx = await this.sabotageContract.facilityRaid(attackerAgent, targetAgent);
+    return tx.wait();
+  }
+
+  async rigJam(attackerAgent: number, targetAgent: number): Promise<ethers.TransactionReceipt> {
+    if (!this.sabotageContract) throw new Error("Sabotage not configured");
+    const tx = await this.sabotageContract.rigJam(attackerAgent, targetAgent);
+    return tx.wait();
+  }
+
+  async gatherIntel(attackerAgent: number, targetAgent: number): Promise<ethers.TransactionReceipt> {
+    if (!this.sabotageContract) throw new Error("Sabotage not configured");
+    const tx = await this.sabotageContract.gatherIntel(attackerAgent, targetAgent);
+    return tx.wait();
+  }
+
+  async getSabotageCooldown(attackerAgent: number, targetAgent: number): Promise<number> {
+    if (!this.sabotageContract) throw new Error("Sabotage not configured");
+    return Number(await this.sabotageContract.getCooldownRemaining(attackerAgent, targetAgent));
+  }
+
+  async getSabotageStats(): Promise<{
+    totalFacilityRaids: number;
+    totalRigJams: number;
+    totalIntelOps: number;
+    totalBurnedBySabotage: bigint;
+  }> {
+    if (!this.sabotageContract) throw new Error("Sabotage not configured");
+    const [raids, jams, intel, burned] = await Promise.all([
+      this.sabotageContract.totalFacilityRaids(),
+      this.sabotageContract.totalRigJams(),
+      this.sabotageContract.totalIntelOps(),
+      this.sabotageContract.totalBurnedBySabotage(),
+    ]);
+    return {
+      totalFacilityRaids: Number(raids),
+      totalRigJams: Number(jams),
+      totalIntelOps: Number(intel),
+      totalBurnedBySabotage: BigInt(burned),
+    };
   }
 }

@@ -143,4 +143,13 @@ contract ShieldManager is Ownable {
     function getShield(uint256 agentId) external view returns (Shield memory) {
         return shields[agentId];
     }
+
+    /// @notice Returns sabotage damage reduction: 0 if no shield, 15 for T1, 30 for T2
+    function getSabotageReduction(uint256 agentId) external view returns (uint256) {
+        Shield memory s = shields[agentId];
+        if (!s.active || s.charges == 0) return 0;
+        if (s.tier == 1) return 15;
+        if (s.tier == 2) return 30;
+        return 0;
+    }
 }

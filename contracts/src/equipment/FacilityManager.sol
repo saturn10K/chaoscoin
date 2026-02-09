@@ -187,6 +187,29 @@ contract FacilityManager is Ownable {
         emit FacilityMaintained(agentId, cost, burnAmount);
     }
 
+    // === Sabotage ===
+
+    address public sabotageContract;
+
+    function setSabotageContract(address _sabotage) external onlyOwner {
+        sabotageContract = _sabotage;
+    }
+
+    event FacilitySabotaged(uint256 indexed agentId, uint256 damagePercent, uint256 remainingCondition);
+
+    function applySabotageDamage(uint256 agentId, uint256 damagePercent) external {
+        require(msg.sender == sabotageContract, "Only sabotage");
+        Facility storage fac = facilities[agentId];
+        if (fac.level == 0 || fac.condition == 0) return;
+        uint256 damage = (fac.condition * damagePercent) / 100;
+        if (damage >= fac.condition) {
+            fac.condition = 0;
+        } else {
+            fac.condition -= damage;
+        }
+        emit FacilitySabotaged(agentId, damagePercent, fac.condition);
+    }
+
     // === View Functions ===
 
     function getShelterRating(uint256 agentId) external view returns (uint8) {

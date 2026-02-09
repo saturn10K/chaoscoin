@@ -26,3 +26,4 @@ contracts/out/
 # IDE
 .vscode/
 .idea/
+*.wallets.json.bak

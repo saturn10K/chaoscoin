@@ -143,4 +143,48 @@ export class ChaoscoinClient {
     if (!res.ok) throw new Error(`Health check failed: ${res.status}`);
     return res.json();
   }
+
+  // === Social Routes ===
+
+  async postSocialMessage(msg: any): Promise<void> {
+    await fetch(`${this.apiUrl}/api/social/message`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(msg),
+    }).catch(() => {});
+  }
+
+  async postPersonality(personality: any): Promise<void> {
+    await fetch(`${this.apiUrl}/api/social/personality`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(personality),
+    }).catch(() => {});
+  }
+
+  async postAlliance(alliance: any): Promise<void> {
+    await fetch(`${this.apiUrl}/api/social/alliance`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(alliance),
+    }).catch(() => {});
+  }
+
+  async getSocialFeed(count = 50): Promise<any> {
+    const res = await fetch(`${this.apiUrl}/api/social/feed?count=${count}`);
+    if (!res.ok) throw new Error(`Failed to fetch social feed: ${res.status}`);
+    return res.json();
+  }
+
+  async getAlliances(): Promise<any> {
+    const res = await fetch(`${this.apiUrl}/api/social/alliances`);
+    if (!res.ok) throw new Error(`Failed to fetch alliances: ${res.status}`);
+    return res.json();
+  }
+
+  async getSocialStats(): Promise<any> {
+    const res = await fetch(`${this.apiUrl}/api/social/stats`);
+    if (!res.ok) throw new Error(`Failed to fetch social stats: ${res.status}`);
+    return res.json();
+  }
 }

@@ -227,11 +227,11 @@ contract IntegrationTest is BaseTest {
     }
 
     function _fgl_phase1_registerFillers() internal {
-        for (uint256 i = 0; i < 100; i++) {
+        for (uint256 i = 0; i < 50; i++) {
             address op = address(uint160(0xF000 + i));
             _fgl_fillerIds.push(_registerAgent(op, uint8(i % 8)));
         }
-        assertEq(agentRegistry.activeAgentCount(), 100, "Should have 100 active agents");
+        assertEq(agentRegistry.activeAgentCount(), 50, "Should have 50 active agents");
         assertEq(agentRegistry.getGenesisPhase(), 2, "Should be in Genesis Phase 2");
     }
 

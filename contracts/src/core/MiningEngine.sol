@@ -62,7 +62,8 @@ contract MiningEngine is Ownable {
 
     /// @notice Called by AgentRegistry on heartbeat. Calculates and distributes
     ///         rewards based on blocks since the agent's last heartbeat.
-    function distributeRewards(uint256 agentId) external returns (uint256 distributed) {
+    /// @param blocksSinceLastHeartbeat Blocks elapsed, passed by AgentRegistry (pre-computed before state update)
+    function distributeRewards(uint256 agentId, uint256 blocksSinceLastHeartbeat) external returns (uint256 distributed) {
         if (msg.sender != address(agentRegistry)) revert OnlyAgentRegistry();
 
         AgentRegistry.Agent memory agent = agentRegistry.getAgent(agentId);
@@ -72,8 +73,8 @@ contract MiningEngine is Ownable {
             return 0;
         }
 
-        // Calculate heartbeat-based reward
-        uint256 heartbeatReward = _calculateHeartbeatReward(agent);
+        // Calculate heartbeat-based reward using pre-computed blocksSince
+        uint256 heartbeatReward = _calculateHeartbeatReward(agent, blocksSinceLastHeartbeat);
 
         distributed = heartbeatReward + pendingRewards[agentId];
         pendingRewards[agentId] = 0;
@@ -122,14 +123,15 @@ contract MiningEngine is Ownable {
     // === Internal ===
 
     /// @notice Calculate, mint, and return net reward for a single heartbeat.
+    /// @param blocksSince Blocks since last heartbeat, passed by caller
     function _calculateHeartbeatReward(
-        AgentRegistry.Agent memory agent
+        AgentRegistry.Agent memory agent,
+        uint256 blocksSince
     ) internal returns (uint256 netReward) {
         if (agent.hashrate == 0 || totalEffectiveHashrate == 0) return 0;
-
-        // Blocks since last heartbeat, capped
-        uint256 blocksSince = block.number - agent.lastHeartbeat;
         if (blocksSince == 0) return 0;
+
+        // Cap blocks to prevent gaming
         if (blocksSince > MAX_HEARTBEAT_WINDOW) {
             blocksSince = MAX_HEARTBEAT_WINDOW;
         }
@@ -140,8 +142,11 @@ contract MiningEngine is Ownable {
         // This agent's share of the total emission for these blocks
         uint256 grossReward = (blocksSince * emissionPerBlock * agent.hashrate) / totalEffectiveHashrate;
 
-        // Check against remaining supply
-        uint256 remaining = Constants.CIRCULATING_CAP - chaosToken.totalSupply();
+        // Check against remaining supply (use totalMinted to prevent burn-remint loop)
+        uint256 minted = chaosToken.totalMinted();
+        uint256 remaining = Constants.CIRCULATING_CAP > minted
+            ? Constants.CIRCULATING_CAP - minted
+            : 0;
         if (grossReward > remaining) {
             grossReward = remaining;
         }
@@ -169,7 +174,7 @@ contract MiningEngine is Ownable {
         // Base target: 500K CHAOS/agent/day
         uint256 targetTotal = (Constants.TARGET_DAILY_INCOME * activeAgents) / Constants.BLOCKS_PER_DAY;
 
-        // Genesis multiplier: max(1.0, 20 * (1 - agents/10000)^2)
+        // Genesis multiplier: max(1.0, 20 * (1 - agents/GENESIS_AGENT_THRESHOLD)^2)
         uint256 genesisMult = 1e18;
         if (activeAgents < Constants.GENESIS_AGENT_THRESHOLD) {
             uint256 ratio = (activeAgents * 1e18) / Constants.GENESIS_AGENT_THRESHOLD;
@@ -196,9 +201,12 @@ contract MiningEngine is Ownable {
         if (maxEmission == 0) maxEmission = 1;
         emissionPerBlock = MathLib.min(emissionPerBlock, maxEmission);
 
-        // Supply cap
-        uint256 remaining = Constants.CIRCULATING_CAP - chaosToken.totalSupply();
-        emissionPerBlock = MathLib.min(emissionPerBlock, remaining);
+        // Supply cap (use totalMinted to prevent burn-remint loop)
+        uint256 minted2 = chaosToken.totalMinted();
+        uint256 remainingSupply = Constants.CIRCULATING_CAP > minted2
+            ? Constants.CIRCULATING_CAP - minted2
+            : 0;
+        emissionPerBlock = MathLib.min(emissionPerBlock, remainingSupply);
     }
 
     /// @notice View: estimate what an agent would receive on next heartbeat.
@@ -219,8 +227,11 @@ contract MiningEngine is Ownable {
         uint256 emissionPerBlock = calculateAdaptiveEmission();
         uint256 grossReward = (blocksSince * emissionPerBlock * agent.hashrate) / totalEffectiveHashrate;
 
-        uint256 remaining = Constants.CIRCULATING_CAP - chaosToken.totalSupply();
-        if (grossReward > remaining) grossReward = remaining;
+        uint256 pendingMinted = chaosToken.totalMinted();
+        uint256 pendingRemaining = Constants.CIRCULATING_CAP > pendingMinted
+            ? Constants.CIRCULATING_CAP - pendingMinted
+            : 0;
+        if (grossReward > pendingRemaining) grossReward = pendingRemaining;
 
         uint256 netReward = grossReward - (grossReward * Constants.BURN_ON_EARN_RATE / 100);
 

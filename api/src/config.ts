@@ -33,5 +33,7 @@ export const config = {
     cosmicEngine: requireEnv("COSMIC_ENGINE_ADDRESS"),
     eraManager: requireEnv("ERA_MANAGER_ADDRESS"),
     zoneManager: requireEnv("ZONE_MANAGER_ADDRESS"),
+    marketplace: optionalEnv("MARKETPLACE_ADDRESS", ""),
+    sabotage: optionalEnv("SABOTAGE_ADDRESS", ""),
   },
 } as const;

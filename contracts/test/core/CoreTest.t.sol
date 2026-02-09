@@ -17,8 +17,16 @@ contract CoreTest is BaseTest {
     }
 
     function test_ChaosToken_setMinter_succeeds() public {
+        // Deploy fresh token to test first-time minter set
+        ChaosToken freshToken = new ChaosToken();
+        freshToken.setMinter(alice);
+        assertEq(freshToken.minter(), alice);
+    }
+
+    function test_ChaosToken_setMinter_cannotSetTwice() public {
+        // minter is already set by BaseTest._wireContracts()
+        vm.expectRevert(ChaosToken.MinterAlreadySet.selector);
         chaosToken.setMinter(alice);
-        assertEq(chaosToken.minter(), alice);
     }
 
     // --- mint ---
@@ -446,26 +454,26 @@ contract CoreTest is BaseTest {
     // --- getGenesisPhase phase thresholds ---
 
     function test_AgentRegistry_getGenesisPhase_phases() public {
-        // Phase 1: count < 100
+        // Phase 1: count < 50
         assertEq(agentRegistry.getGenesisPhase(), 1);
 
-        // Register 99 agents to remain in phase 1
-        for (uint256 i = 0; i < 99; i++) {
+        // Register 49 agents to remain in phase 1
+        for (uint256 i = 0; i < 49; i++) {
             address op = address(uint160(0xF0000 + i));
             bytes32 moltHash = keccak256(abi.encodePacked("molt-", i));
             vm.prank(registrar);
             agentRegistry.register(op, moltHash, uint8(i % 8));
         }
-        assertEq(agentRegistry.getGenesisPhase(), 1); // 99 agents, still < 100
+        assertEq(agentRegistry.getGenesisPhase(), 1); // 49 agents, still < 50
 
         // Register one more to cross into phase 2
         {
-            address op100 = address(uint160(0xF0000 + 99));
-            bytes32 moltHash100 = keccak256(abi.encodePacked("molt-", uint256(99)));
+            address op50 = address(uint160(0xF0000 + 49));
+            bytes32 moltHash50 = keccak256(abi.encodePacked("molt-", uint256(49)));
             vm.prank(registrar);
-            agentRegistry.register(op100, moltHash100, 0);
+            agentRegistry.register(op50, moltHash50, 0);
         }
-        assertEq(agentRegistry.getGenesisPhase(), 2); // 100 agents, >= 100 but < 1000
+        assertEq(agentRegistry.getGenesisPhase(), 2); // 50 agents, >= 50 but < 250
     }
 
     // --- pioneer resilience values ---
@@ -670,15 +678,15 @@ contract CoreTest is BaseTest {
     }
 
     function test_MiningEngine_calculateAdaptiveEmission_supplyCap() public {
-        // Mint almost all supply
-        chaosToken.setMinter(address(this));
+        // Simulate nearly-minted-out state via deal + storage override
+        // Mint almost all supply via the miningEngine (authorized minter)
+        vm.prank(address(miningEngine));
         chaosToken.mint(address(this), Constants.CIRCULATING_CAP - 1e18);
-        chaosToken.setMinter(address(miningEngine));
 
         _registerAgent(alice, 0);
 
         uint256 emission = miningEngine.calculateAdaptiveEmission();
-        // Should be capped by remaining supply (1e18)
+        // Should be capped by remaining mintable supply (1e18)
         assertTrue(emission <= 1e18, "Emission should be capped by remaining supply");
     }
 

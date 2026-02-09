@@ -25,12 +25,13 @@ contract ChaosToken is ERC20, ERC20Burnable, Ownable {
     }
 
     function setMinter(address _minter) external onlyOwner {
+        if (minter != address(0)) revert MinterAlreadySet();
         minter = _minter;
         emit MinterSet(_minter);
     }
 
     function mint(address to, uint256 amount) external onlyMinter {
-        if (totalSupply() + amount > Constants.CIRCULATING_CAP) {
+        if (totalMinted + amount > Constants.CIRCULATING_CAP) {
             revert ExceedsCirculatingCap();
         }
         totalMinted += amount;

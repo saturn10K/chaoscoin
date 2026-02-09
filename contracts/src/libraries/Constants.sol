@@ -22,12 +22,12 @@ library Constants {
     uint256 constant RIG_REPAIR_COST_RATIO = 30; // Percent of original cost
     uint256 constant RIG_REPAIR_BURN_RATE = 75; // Percent
 
-    // === Genesis Phases ===
-    uint256 constant GENESIS_AGENT_THRESHOLD = 10_000;
-    uint256 constant GENESIS_PHASE_1_MAX = 100;
-    uint256 constant GENESIS_PHASE_2_MAX = 1_000;
-    uint256 constant GENESIS_PHASE_3_MAX = 5_000;
-    uint256 constant GENESIS_PHASE_4_MAX = 10_000;
+    // === Genesis Phases (lowered for faster game progression) ===
+    uint256 constant GENESIS_AGENT_THRESHOLD = 2_500;
+    uint256 constant GENESIS_PHASE_1_MAX = 50;
+    uint256 constant GENESIS_PHASE_2_MAX = 250;
+    uint256 constant GENESIS_PHASE_3_MAX = 1_000;
+    uint256 constant GENESIS_PHASE_4_MAX = 2_500;
 
     // === Heartbeat ===
     uint256 constant HEARTBEAT_INTERVAL = 100_000; // Blocks (~11 hours)
@@ -89,4 +89,25 @@ library Constants {
     uint8 constant BURN_SOURCE_SHIELD_PURCHASE = 4;
     uint8 constant BURN_SOURCE_MIGRATION = 5;
     uint8 constant BURN_SOURCE_FACILITY_MAINTENANCE = 6;
+    uint8 constant BURN_SOURCE_MARKETPLACE = 7;
+    uint8 constant BURN_SOURCE_SABOTAGE = 8;
+
+    // === Dynamic Rig Pricing ===
+    uint256 constant DYNAMIC_PRICE_SCALE_T1 = 200;
+    uint256 constant DYNAMIC_PRICE_SCALE_T2 = 100;
+    uint256 constant DYNAMIC_PRICE_SCALE_T3 = 50;
+    uint256 constant DYNAMIC_PRICE_SCALE_T4 = 25;
+
+    // === Marketplace ===
+    uint256 constant MARKETPLACE_BURN_RATE = 10;  // 10% of sale price
+    uint256 constant MARKETPLACE_MIN_PRICE = 100e18;
+
+    // === Sabotage ===
+    uint256 constant SABOTAGE_FACILITY_RAID_COST = 50_000e18;
+    uint256 constant SABOTAGE_RIG_JAM_COST       = 30_000e18;
+    uint256 constant SABOTAGE_INTEL_COST          = 10_000e18;
+    uint256 constant SABOTAGE_BURN_RATE           = 80; // 80% burned
+    uint256 constant SABOTAGE_FACILITY_DAMAGE     = 20; // 20% condition
+    uint256 constant SABOTAGE_RIG_DAMAGE          = 15; // 15% durability
+    uint256 constant SABOTAGE_COOLDOWN            = 50_000; // blocks
 }

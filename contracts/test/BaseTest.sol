@@ -12,6 +12,8 @@ import "../src/cosmic/EraManager.sol";
 import "../src/cosmic/ZoneManager.sol";
 import "../src/cosmic/ShieldManager.sol";
 import "../src/cosmic/CosmicEngine.sol";
+import "../src/marketplace/Marketplace.sol";
+import "../src/sabotage/Sabotage.sol";
 import "../src/libraries/Constants.sol";
 
 contract BaseTest is Test {
@@ -25,6 +27,8 @@ contract BaseTest is Test {
     RigFactory public rigFactory;
     ShieldManager public shieldManager;
     CosmicEngine public cosmicEngine;
+    Marketplace public marketplace;
+    Sabotage public sabotage;
 
     address public deployer = address(this);
     address public treasury = address(0xBEEF);
@@ -81,6 +85,22 @@ contract BaseTest is Test {
             address(chaosToken),
             address(tokenBurner)
         );
+        marketplace = new Marketplace(
+            address(chaosToken),
+            address(agentRegistry),
+            address(rigFactory),
+            address(tokenBurner),
+            treasury
+        );
+        sabotage = new Sabotage(
+            address(chaosToken),
+            address(agentRegistry),
+            address(rigFactory),
+            address(facilityManager),
+            address(shieldManager),
+            address(tokenBurner),
+            treasury
+        );
     }
 
     function _wireContracts() internal virtual {
@@ -94,8 +114,17 @@ contract BaseTest is Test {
         agentRegistry.setRigFactory(address(rigFactory));
         agentRegistry.setFacilityManager(address(facilityManager));
         agentRegistry.setMiningEngine(address(miningEngine));
+        agentRegistry.setShieldManager(address(shieldManager));
+        agentRegistry.setCosmicEngine(address(cosmicEngine));
         rigFactory.setCosmicEngine(address(cosmicEngine));
         shieldManager.setCosmicEngine(address(cosmicEngine));
+
+        // Marketplace & Sabotage
+        rigFactory.setMarketplace(address(marketplace));
+        rigFactory.setSabotageContract(address(sabotage));
+        facilityManager.setSabotageContract(address(sabotage));
+        tokenBurner.setAuthorizedBurner(address(marketplace), true);
+        tokenBurner.setAuthorizedBurner(address(sabotage), true);
     }
 
     /// @dev Register an agent and return agentId

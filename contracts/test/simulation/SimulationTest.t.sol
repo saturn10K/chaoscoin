@@ -106,6 +106,8 @@ contract SimulationTest is BaseTest {
         // Do NOT set rigFactory here -- handled in _registerAgentSafe
         agentRegistry.setFacilityManager(address(facilityManager));
         agentRegistry.setMiningEngine(address(miningEngine));
+        agentRegistry.setShieldManager(address(shieldManager));
+        agentRegistry.setCosmicEngine(address(cosmicEngine));
         rigFactory.setCosmicEngine(address(cosmicEngine));
         shieldManager.setCosmicEngine(address(cosmicEngine));
     }

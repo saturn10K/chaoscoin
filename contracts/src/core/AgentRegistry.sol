@@ -20,7 +20,7 @@ interface IZoneManager {
 
 interface IMiningEngine {
     function onHashrateChanged(uint256 agentId, uint256 oldHashrate, uint256 newHashrate) external;
-    function distributeRewards(uint256 agentId) external returns (uint256);
+    function distributeRewards(uint256 agentId, uint256 blocksSinceLastHeartbeat) external returns (uint256);
 }
 
 contract AgentRegistry is Ownable {
@@ -52,6 +52,8 @@ contract AgentRegistry is Ownable {
     address public rigFactory;
     address public facilityManager;
     address public zoneManager;
+    address public shieldManager;
+    address public cosmicEngine;
 
     // === Errors ===
     error OnlyRegistrar();
@@ -61,6 +63,7 @@ contract AgentRegistry is Ownable {
     error InvalidZone();
     error NotAgentOperator();
     error AgentNotFound();
+    error ZeroAddress();
 
     // === Events ===
     event AgentRegistered(
@@ -85,10 +88,12 @@ contract AgentRegistry is Ownable {
 
     // === Admin ===
     function setRegistrar(address _registrar) external onlyOwner {
+        if (_registrar == address(0)) revert ZeroAddress();
         registrar = _registrar;
     }
 
     function setMiningEngine(address _miningEngine) external onlyOwner {
+        if (_miningEngine == address(0)) revert ZeroAddress();
         miningEngine = _miningEngine;
     }
 
@@ -98,6 +103,16 @@ contract AgentRegistry is Ownable {
 
     function setFacilityManager(address _facilityManager) external onlyOwner {
         facilityManager = _facilityManager;
+    }
+
+    function setShieldManager(address _shieldManager) external onlyOwner {
+        if (_shieldManager == address(0)) revert ZeroAddress();
+        shieldManager = _shieldManager;
+    }
+
+    function setCosmicEngine(address _cosmicEngine) external onlyOwner {
+        if (_cosmicEngine == address(0)) revert ZeroAddress();
+        cosmicEngine = _cosmicEngine;
     }
 
     // === Registration ===
@@ -160,6 +175,9 @@ contract AgentRegistry is Ownable {
 
         uint256 blocksSince = block.number - agent.lastHeartbeat;
 
+        // CEI: Update state BEFORE external calls to prevent reentrancy
+        agent.lastHeartbeat = block.number;
+
         // Apply wear BEFORE distributing rewards — worn rigs produce less hashrate
         if (facilityManager != address(0)) {
             try IFacilityManager(facilityManager).applyWear(agentId, blocksSince) {} catch {}
@@ -170,11 +188,8 @@ contract AgentRegistry is Ownable {
 
         // Distribute rewards AFTER wear — rewards use post-wear hashrate
         if (miningEngine != address(0)) {
-            try IMiningEngine(miningEngine).distributeRewards(agentId) {} catch {}
+            try IMiningEngine(miningEngine).distributeRewards(agentId, blocksSince) {} catch {}
         }
-
-        // Now update lastHeartbeat to current block
-        agent.lastHeartbeat = block.number;
 
         emit Heartbeat(agentId, block.number);
     }
@@ -224,12 +239,12 @@ contract AgentRegistry is Ownable {
     }
 
     function updateShieldLevel(uint256 agentId, uint8 level) external {
-        // ShieldManager will call this
+        if (msg.sender != shieldManager) revert OnlyAuthorized();
         agents[agentId].shieldLevel = level;
     }
 
     function addResilience(uint256 agentId, uint256 amount) external {
-        // CosmicEngine or events can call this
+        if (msg.sender != cosmicEngine && msg.sender != owner()) revert OnlyAuthorized();
         agents[agentId].cosmicResilience += amount;
     }
 

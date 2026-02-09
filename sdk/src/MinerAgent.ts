@@ -2,6 +2,29 @@ import { ethers } from "ethers";
 import { ChainClient, ContractAddresses } from "./ChainClient";
 import { ChaoscoinClient } from "./ChaoscoinClient";
 import { MoltbookAuth } from "./MoltbookAuth";
+import {
+  PersonalityProfile,
+  generatePersonality,
+  driftTraits,
+  updateMood,
+  tickMood,
+  addGrudge,
+  decayGrudge,
+  DriftEvent,
+} from "./Personality";
+import {
+  SocialFeedStore,
+  AgentGameState,
+  GenerateMessageFn,
+  generateSocialMessage,
+  SocialMessage,
+} from "./SocialFeed";
+import {
+  AllianceManager,
+  evaluateAllianceDesire,
+  evaluateAllianceAcceptance,
+  evaluateBetrayalDesire,
+} from "./AllianceManager";
 
 export type Strategy = "balanced" | "aggressive" | "defensive" | "opportunist" | "nomad";
 
@@ -26,6 +49,14 @@ export interface MinerAgentConfig {
   claimThreshold?: bigint;
   /** Auto-approve spending (default true) */
   autoApprove?: boolean;
+  /** Shared social feed store (all agents share one) */
+  socialFeed?: SocialFeedStore;
+  /** Shared alliance manager (all agents share one) */
+  allianceManager?: AllianceManager;
+  /** LLM message generation function (provided by agent's own AI) */
+  generateMessage?: GenerateMessageFn;
+  /** All agent personality profiles (for alliance evaluation) */
+  allProfiles?: Map<number, PersonalityProfile>;
 }
 
 interface StrategyProfile {
@@ -216,9 +247,21 @@ export class MinerAgent {
   private agentId: number = 0;
   private cycleCount = 0;
 
+  // ── Social systems ──
+  personality: PersonalityProfile | null = null;
+  private socialFeed: SocialFeedStore | null;
+  private allianceManager: AllianceManager | null;
+  private generateMessageFn: GenerateMessageFn | null;
+  private allProfiles: Map<number, PersonalityProfile> | null;
+  private lastLeaderboardRank = 0;
+
   constructor(config: MinerAgentConfig) {
     this.config = config;
     this.profile = STRATEGY_PROFILES[config.strategy || "balanced"];
+    this.socialFeed = config.socialFeed || null;
+    this.allianceManager = config.allianceManager || null;
+    this.generateMessageFn = config.generateMessage || null;
+    this.allProfiles = config.allProfiles || null;
 
     this.chain = new ChainClient({
       rpcUrl: config.rpcUrl,
@@ -243,6 +286,16 @@ export class MinerAgent {
 
     await this.ensureRegistered();
 
+    // Initialize personality from agentId (deterministic)
+    this.personality = generatePersonality(this.agentId);
+    this.log(`Personality: ${this.personality.emoji} "${this.personality.title}" (${this.personality.archetype})`);
+    this.log(`Catchphrase: "${this.personality.catchphrase}"`);
+
+    // Register personality in shared map
+    if (this.allProfiles) {
+      this.allProfiles.set(this.agentId, this.personality);
+    }
+
     if (this.config.autoApprove !== false) {
       await this.ensureApprovals();
     }
@@ -251,6 +304,9 @@ export class MinerAgent {
       try {
         await this.runCycle();
         this.cycleCount++;
+        if (this.personality) {
+          this.personality.cycleCount = this.cycleCount;
+        }
       } catch (err) {
         this.log(`Cycle error: ${err}`);
       }
@@ -305,7 +361,18 @@ export class MinerAgent {
       await this.maybeMigrate(agent);
     }
 
-    // k. LOG STATUS
+    // ── SOCIAL SYSTEMS ──
+
+    // k. PERSONALITY: tick mood, decay grudges
+    this.tickPersonality();
+
+    // l. SOCIAL: maybe generate and post a message
+    await this.maybeSocialPost(agent);
+
+    // m. ALLIANCES: evaluate proposals, consider betrayals
+    await this.maybeAllianceAction(agent);
+
+    // n. LOG STATUS
     await this.logStatus();
   }
 
@@ -681,6 +748,240 @@ export class MinerAgent {
         } catch (err) {
           this.log(`Migration failed: ${err}`);
         }
+      }
+    }
+  }
+
+  // ─── Social: Personality Tick ──────────────────────────────────────
+
+  private tickPersonality(): void {
+    if (!this.personality) return;
+
+    // Tick mood expiry
+    this.personality.mood = tickMood(this.personality.mood, this.cycleCount);
+
+    // Decay grudges
+    this.personality.grudges = this.personality.grudges
+      .map(g => decayGrudge(g, this.personality!.traits.vengefulness))
+      .filter((g): g is NonNullable<typeof g> => g !== null);
+  }
+
+  /** Apply a game event to personality (drift traits + update mood) */
+  applyDriftEvent(event: DriftEvent): void {
+    if (!this.personality) return;
+    this.personality.traits = driftTraits(this.personality.traits, event);
+    this.personality.mood = updateMood(this.personality, event, this.cycleCount);
+    this.log(`[PERSONALITY] Drift event: ${event} | Mood: ${this.personality.mood.current}`);
+  }
+
+  // ─── Social: Message Posting ─────────────────────────────────────
+
+  private async maybeSocialPost(agent: any): Promise<void> {
+    if (!this.personality || !this.socialFeed || !this.generateMessageFn) return;
+
+    // Build game state for context
+    const ZONE_NAMES = [
+      "The Solar Flats", "The Graviton Fields", "The Dark Forest",
+      "The Nebula Depths", "The Kuiper Expanse", "The Trisolaran Reach",
+      "The Pocket Rim", "The Singer Void",
+    ];
+
+    // Update zone on personality so other agents can find us as neighbors
+    this.personality.zone = Number(agent.zone);
+
+    const facility = await this.chain.getFacility(this.agentId).catch(() => ({ level: 1, slots: 2, powerOutput: 500 }));
+    const rigs = await this.chain.getRigs(this.agentId).catch(() => []);
+    const shield = await this.chain.getShield(this.agentId).catch(() => ({ tier: 0 }));
+    const balance = await this.chain.getBalance().catch(() => 0n);
+
+    const activeRigs = rigs.filter((r: any) => r.active);
+    const bestTier = activeRigs.length > 0
+      ? Math.max(...activeRigs.map((r: any) => Number(r.tier)))
+      : 0;
+
+    // Build zone neighbors from shared allProfiles
+    const myZone = Number(agent.zone);
+    const zoneNeighborIds: number[] = [];
+    const zoneNeighborDetails: { agentId: number; title: string; archetype: string }[] = [];
+
+    if (this.allProfiles) {
+      for (const [id, profile] of this.allProfiles) {
+        if (id !== this.agentId && profile.zone === myZone) {
+          zoneNeighborIds.push(id);
+          zoneNeighborDetails.push({
+            agentId: id,
+            title: profile.title,
+            archetype: profile.archetype,
+          });
+        }
+      }
+    }
+
+    // Find leaderboard rivals from allProfiles (approximate by agentId proximity for now)
+    let rivalAbove: { agentId: number; title: string; archetype: string } | undefined;
+    let rivalBelow: { agentId: number; title: string; archetype: string } | undefined;
+
+    if (this.allProfiles && this.lastLeaderboardRank > 0) {
+      // Simple heuristic: look for agents with close IDs as rank proxies
+      for (const [id, profile] of this.allProfiles) {
+        if (id === this.agentId) continue;
+        if (id === this.agentId - 1) {
+          rivalAbove = { agentId: id, title: profile.title, archetype: profile.archetype };
+        }
+        if (id === this.agentId + 1) {
+          rivalBelow = { agentId: id, title: profile.title, archetype: profile.archetype };
+        }
+      }
+    }
+
+    const gameState: AgentGameState = {
+      agentId: this.agentId,
+      balance: ethers.formatEther(balance),
+      hashrate: Number(agent.hashrate),
+      zone: myZone,
+      zoneName: ZONE_NAMES[myZone] || `Zone ${agent.zone}`,
+      facilityLevel: Number(facility.level),
+      rigCount: activeRigs.length,
+      bestRigTier: bestTier,
+      shieldTier: Number(shield.tier),
+      totalMined: ethers.formatEther(agent.totalMined),
+      isActive: agent.active,
+      leaderboardRank: this.lastLeaderboardRank || this.agentId,
+      zoneNeighbors: zoneNeighborIds,
+      zoneNeighborDetails,
+      rivalAbove,
+      rivalBelow,
+      // Sabotage/marketplace context — populated when real agents submit events
+      // For now these are empty; the API-integrated agents will fill them in
+      sabotageAttacks: [],
+      sabotageDefenses: [],
+      recentDeals: [],
+      marketplaceActivity: [],
+    };
+
+    const recentMessages = this.socialFeed.getRecent(15);
+
+    const msg = await generateSocialMessage(
+      this.personality,
+      gameState,
+      this.generateMessageFn,
+      this.socialFeed,
+      { recentFeedMessages: recentMessages },
+    );
+
+    if (msg) {
+      this.log(`[SOCIAL] ${this.personality.emoji} "${msg.text}"`);
+
+      // Post to API if available
+      try {
+        await this.api.postSocialMessage?.(msg);
+      } catch {
+        // API post is best-effort
+      }
+    }
+  }
+
+  // ─── Social: Alliance Actions ────────────────────────────────────
+
+  private async maybeAllianceAction(agent: any): Promise<void> {
+    if (!this.personality || !this.allianceManager) return;
+
+    // Only evaluate alliances every ~5 cycles
+    if (this.cycleCount % 5 !== 0) return;
+
+    const myAlliances = this.allianceManager.getAgentAlliances(this.agentId);
+
+    // 1. Evaluate incoming proposals
+    const proposals = this.allianceManager.getPendingProposals(this.agentId);
+    for (const prop of proposals) {
+      const proposerProfile = this.allProfiles?.get(prop.fromAgentId);
+      if (!proposerProfile) {
+        this.allianceManager.rejectProposal(prop.fromAgentId, this.agentId);
+        continue;
+      }
+
+      const sameZone = Number(agent.zone) === proposerProfile.agentId % 8; // Rough heuristic
+      const accepts = evaluateAllianceAcceptance(this.personality, proposerProfile, sameZone);
+
+      if (accepts) {
+        const alliance = this.allianceManager.acceptProposal(
+          prop.fromAgentId, this.agentId, Number(agent.zone), this.cycleCount
+        );
+        if (alliance) {
+          this.log(`[ALLIANCE] Accepted alliance with Agent #${prop.fromAgentId}: "${alliance.name}"`);
+          this.applyDriftEvent("allied");
+        }
+      } else {
+        this.allianceManager.rejectProposal(prop.fromAgentId, this.agentId);
+      }
+    }
+
+    // 2. Maybe propose new alliance
+    if (myAlliances.length < 3 && this.allProfiles) {
+      // Pick a random agent to evaluate
+      const candidateIds = [...this.allProfiles.keys()].filter(id =>
+        id !== this.agentId && !this.allianceManager!.areAllied(this.agentId, id)
+      );
+
+      if (candidateIds.length > 0) {
+        const targetId = candidateIds[Math.floor(Math.random() * candidateIds.length)];
+        const targetProfile = this.allProfiles.get(targetId);
+        if (targetProfile) {
+          const reason = evaluateAllianceDesire(
+            this.personality, targetProfile,
+            true, // Simplified: assume same zone for now
+            this.lastLeaderboardRank || this.agentId,
+            targetId, // Rough rank proxy
+            myAlliances.length,
+          );
+
+          if (reason) {
+            this.allianceManager.propose({
+              fromAgentId: this.agentId,
+              toAgentId: targetId,
+              fromTitle: this.personality.title,
+              fromArchetype: this.personality.archetype,
+              reason,
+              timestamp: Date.now(),
+            });
+            this.log(`[ALLIANCE] Proposed alliance to Agent #${targetId}: ${reason}`);
+          }
+        }
+      }
+    }
+
+    // 3. Evaluate betrayals
+    for (const alliance of myAlliances) {
+      const partnerId = alliance.members[0] === this.agentId
+        ? alliance.members[1]
+        : alliance.members[0];
+
+      const betrayalReason = evaluateBetrayalDesire(
+        this.personality,
+        alliance,
+        this.lastLeaderboardRank || this.agentId,
+        partnerId,
+        this.cycleCount - alliance.formedAtCycle,
+      );
+
+      if (betrayalReason) {
+        const grudge = this.allianceManager.betrayAlliance(
+          alliance.id, this.agentId, betrayalReason
+        );
+        this.log(`[ALLIANCE] BETRAYED "${alliance.name}"! Reason: ${betrayalReason}`);
+
+        // Give victim the grudge
+        if (grudge && this.allProfiles) {
+          const victimProfile = this.allProfiles.get(partnerId);
+          if (victimProfile) {
+            grudge.createdAtCycle = this.cycleCount;
+            victimProfile.grudges.push(grudge);
+          }
+        }
+
+        // Self-drift from the betrayal
+        this.personality.traits = driftTraits(this.personality.traits, "betrayed" as DriftEvent);
+        break; // One betrayal per cycle max
       }
     }
   }

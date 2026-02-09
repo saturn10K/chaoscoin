@@ -24,6 +24,8 @@ contract EquipmentTest is BaseTest {
         // Do NOT set rigFactory here -- we handle it in _registerAgentSafe
         agentRegistry.setFacilityManager(address(facilityManager));
         agentRegistry.setMiningEngine(address(miningEngine));
+        agentRegistry.setShieldManager(address(shieldManager));
+        agentRegistry.setCosmicEngine(address(cosmicEngine));
         rigFactory.setCosmicEngine(address(cosmicEngine));
         shieldManager.setCosmicEngine(address(cosmicEngine));
     }
@@ -315,7 +317,7 @@ contract EquipmentTest is BaseTest {
     }
 
     function test_purchaseRig_T2_cost() public {
-        // Need >= 100 agents to be in phase 2 for T2
+        // Need >= 50 agents to be in phase 2 for T2
         _bringToPhase2();
 
         uint256 agentId = agentRegistry.agentByOperator(alice);
@@ -445,7 +447,8 @@ contract EquipmentTest is BaseTest {
 
         // L1 facility has 2 slots. T0 is already equipped (1 slot).
         // Purchase 2 more T1 rigs to try to exceed 2 slots.
-        _fundAndApprove(alice, address(rigFactory), 10_000e18);
+        // Extra funds for dynamic pricing (2nd T1 costs slightly more)
+        _fundAndApprove(alice, address(rigFactory), 15_000e18);
 
         vm.startPrank(alice);
         rigFactory.purchaseRig(agentId, 1); // rig #2
@@ -481,7 +484,8 @@ contract EquipmentTest is BaseTest {
         facilityManager.upgrade(agentId);
 
         // Buy two T3 rigs (800W each). Phase 2 allows up to T3.
-        _fundAndApprove(alice, address(rigFactory), 200_000e18);
+        // Extra funds for dynamic pricing (2nd T3 costs slightly more)
+        _fundAndApprove(alice, address(rigFactory), 210_000e18);
 
         vm.startPrank(alice);
         rigFactory.purchaseRig(agentId, 3); // rig #2
@@ -692,7 +696,8 @@ contract EquipmentTest is BaseTest {
 
         agentRegistry.setRigFactory(address(rigFactory));
 
-        _fundAndApprove(alice, address(rigFactory), 10_000e18);
+        // Extra funds for dynamic pricing (2nd T1 costs slightly more)
+        _fundAndApprove(alice, address(rigFactory), 15_000e18);
 
         // Purchase two T1 rigs
         vm.startPrank(alice);
@@ -820,26 +825,26 @@ contract EquipmentTest is BaseTest {
     // ============================================================
 
     /// @dev Register enough agents to move from phase 1 to phase 2.
-    ///      Phase 2 starts at activeAgentCount >= 100.
+    ///      Phase 2 starts at activeAgentCount >= 50.
     ///      Alice is registered as the first agent so she persists across the test.
     function _bringToPhase2() internal {
         // Register alice first
         _registerAgentSafe(alice, 0);
 
-        // Register 99 more agents to reach 100 total (phase 2 threshold)
-        _registerBulkAgents(1, 99);
+        // Register 49 more agents to reach 50 total (phase 2 threshold)
+        _registerBulkAgents(1, 49);
 
-        assertGe(agentRegistry.activeAgentCount(), 100, "should be in phase 2+");
+        assertGe(agentRegistry.activeAgentCount(), 50, "should be in phase 2+");
         assertEq(agentRegistry.getGenesisPhase(), 2, "should be phase 2");
     }
 
-    /// @dev Register enough agents to move to phase 3 (>= 1000 agents).
+    /// @dev Register enough agents to move to phase 3 (>= 250 agents).
     function _bringToPhase3() internal {
         _registerAgentSafe(alice, 0);
 
-        _registerBulkAgents(1, 999);
+        _registerBulkAgents(1, 249);
 
-        assertGe(agentRegistry.activeAgentCount(), 1000, "should be in phase 3+");
+        assertGe(agentRegistry.activeAgentCount(), 250, "should be in phase 3+");
         assertEq(agentRegistry.getGenesisPhase(), 3, "should be phase 3");
     }
 }

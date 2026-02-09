@@ -8,10 +8,10 @@ contract CosmicTest is BaseTest {
     //                        HELPERS
     // ================================================================
 
-    /// @dev Register 100 agents to push genesis phase to 2 (activeAgentCount >= 100).
-    ///      Phase thresholds: <100 = phase 1, <1000 = phase 2.
+    /// @dev Register 50 agents to push genesis phase to 2 (activeAgentCount >= 50).
+    ///      Phase thresholds: <50 = phase 1, <250 = phase 2.
     function _bootstrapToPhase2() internal {
-        for (uint256 i = 0; i < 100; i++) {
+        for (uint256 i = 0; i < 50; i++) {
             address op = address(uint160(0x1000 + i));
             bytes32 hash = keccak256(abi.encodePacked("agent-", i));
             vm.prank(registrar);
@@ -23,8 +23,8 @@ contract CosmicTest is BaseTest {
     ///      by registering the remaining agents needed.  Returns the first agent's id.
     function _setupAgentInPhase2(address operator, uint8 zone) internal returns (uint256 agentId) {
         agentId = _registerAgent(operator, zone);
-        // We already have 1 agent.  Need 99 more to hit 100 (phase 2).
-        for (uint256 i = 1; i < 100; i++) {
+        // We already have 1 agent.  Need 49 more to hit 50 (phase 2).
+        for (uint256 i = 1; i < 50; i++) {
             address op = address(uint160(0x2000 + i));
             bytes32 hash = keccak256(abi.encodePacked("bootstrap-", i));
             vm.prank(registrar);
@@ -217,7 +217,7 @@ contract CosmicTest is BaseTest {
     }
 
     function test_ShieldManager_purchaseRevertsInPhase1() public {
-        // Register one agent, stay in phase 1 (activeAgentCount < 100)
+        // Register one agent, stay in phase 1 (activeAgentCount < 50)
         uint256 agentId = _registerAgent(alice, 0);
 
         deal(address(chaosToken), alice, 200_000e18);
@@ -315,7 +315,7 @@ contract CosmicTest is BaseTest {
     // ================================================================
 
     function test_CosmicEngine_triggerEvent_revertsInPhase1() public {
-        // In phase 1 (no agents or fewer than 100), events are disabled
+        // In phase 1 (no agents or fewer than 50), events are disabled
         vm.expectRevert(CosmicEngine.EventsDisabledInPhase1.selector);
         cosmicEngine.triggerEvent();
     }
