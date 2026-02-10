@@ -524,7 +524,7 @@ async function main() {
       chainId: CHAIN_ID,
       addresses: ADDRESSES,
       strategy: cfg.strategy,
-      interval: 90_000, // 90s per cycle per agent
+      interval: 180_000, // 180s per cycle per agent — gas efficient
       autoApprove: true,
       socialFeed,
       allianceManager,

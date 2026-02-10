@@ -455,48 +455,58 @@ export class MinerAgent {
     // Reset cycle events
     this.cycleEvents = { attacksMade: [], attacksReceived: [], rigsBought: [], rigsSold: [], rigsListed: [] };
 
+    // ── Gas guard: skip all write txs if MON balance is critically low ──
+    const gasBal = await this.chain.provider.getBalance(this.chain.address);
+    const MIN_GAS = ethers.parseEther("0.01"); // 0.01 MON
+    const gasOk = gasBal >= MIN_GAS;
+    if (!gasOk) {
+      this.log(`⚠ Low gas (${ethers.formatEther(gasBal)} MON) — skipping write txs this cycle`);
+    }
+
     // a. HEARTBEAT — always first (triggers mint + distribute rewards on-chain)
-    await this.maybeHeartbeat(agent, blockNumber);
+    if (gasOk) await this.maybeHeartbeat(agent, blockNumber);
 
     // b. CLAIM any remaining buffered rewards (heartbeat auto-distributes, but claim picks up leftovers)
-    await this.maybeClaim(agent);
+    if (gasOk) await this.maybeClaim(agent);
 
     // d/e. UPGRADE EQUIPMENT — order depends on strategy
-    if (this.profile.facilityFirst) {
-      await this.maybeUpgradeFacility();
-      await this.maybeUpgradeRigs();
-    } else {
-      await this.maybeUpgradeRigs();
-      await this.maybeUpgradeFacility();
+    if (gasOk) {
+      if (this.profile.facilityFirst) {
+        await this.maybeUpgradeFacility();
+        await this.maybeUpgradeRigs();
+      } else {
+        await this.maybeUpgradeRigs();
+        await this.maybeUpgradeFacility();
+      }
     }
 
     // f. BUY/UPGRADE SHIELD
-    await this.maybeBuyShield();
+    if (gasOk) await this.maybeBuyShield();
 
     // g. REPAIR RIGS
-    await this.maybeRepairRigs();
+    if (gasOk) await this.maybeRepairRigs();
 
     // g2. MAINTAIN FACILITY
-    await this.maybeMaintainFacility();
+    if (gasOk) await this.maybeMaintainFacility();
 
     // h. TRIGGER COSMIC EVENT (gated behind 50M mined)
-    await this.maybeTriggerEvent();
+    if (gasOk) await this.maybeTriggerEvent();
 
     // i. PROCESS UNPROCESSED EVENTS (gated behind 50M mined)
-    if (this.profile.processEvents) {
+    if (gasOk && this.profile.processEvents) {
       await this.maybeProcessEvents();
     }
 
     // j. EVALUATE ZONE MIGRATION
-    if (this.profile.willMigrate) {
+    if (gasOk && this.profile.willMigrate) {
       await this.maybeMigrate(agent);
     }
 
     // k. SABOTAGE — attack other agents
-    await this.maybeSabotage(agent);
+    if (gasOk) await this.maybeSabotage(agent);
 
     // l. MARKETPLACE — buy/sell rigs
-    await this.maybeTradeRigs(agent);
+    if (gasOk) await this.maybeTradeRigs(agent);
 
     // ── SOCIAL SYSTEMS ──
 
@@ -581,13 +591,13 @@ export class MinerAgent {
 
   private async maybeHeartbeat(agent: any, blockNumber: number): Promise<void> {
     // In the heartbeat-only reward model, rewards are minted each time an agent
-    // heartbeats (capped at MAX_HEARTBEAT_WINDOW = 500 blocks). So we heartbeat
-    // every cycle to keep rewards flowing. We still skip if fewer than 100 blocks
-    // have passed (to avoid wasting gas on near-zero rewards).
+    // heartbeats (capped at MAX_HEARTBEAT_WINDOW = 500 blocks). Heartbeating
+    // every 500 blocks maximises reward per heartbeat while minimising gas.
+    // Contract timeout is 200,000 blocks — so 500 is plenty safe.
     const lastHeartbeat = Number(agent.lastHeartbeat);
     const blocksSince = blockNumber - lastHeartbeat;
 
-    if (blocksSince >= 100) {
+    if (blocksSince >= 500) {
       this.log(`Sending heartbeat (${blocksSince} blocks since last)...`);
       try {
         await this.chain.heartbeat(this.agentId);
@@ -608,8 +618,9 @@ export class MinerAgent {
     // Check pending rewards
     try {
       const pending = await this.chain.getPendingRewards(this.agentId);
+      // Base threshold 5000 CHAOS — higher threshold = fewer claim txs = less gas
       const threshold =
-        (1000n * 10n ** 18n * BigInt(Math.floor(this.profile.claimEagerness * 100))) / 100n;
+        (5000n * 10n ** 18n * BigInt(Math.floor(this.profile.claimEagerness * 100))) / 100n;
 
       if (pending > threshold) {
         this.log(
@@ -674,10 +685,18 @@ export class MinerAgent {
               const rigs = await this.chain.getRigs(this.agentId);
               const latestRig = rigs[rigs.length - 1];
               if (latestRig && !latestRig.active) {
-                try {
-                  await this.chain.equipRig(latestRig.rigId);
-                  this.log(`Rig ${latestRig.rigId} equipped`);
-                } catch { this.log("Could not equip — check power budget / slots"); }
+                // Pre-check: only attempt equip if we have power budget + slot space
+                const fac = await this.chain.getFacility(this.agentId);
+                const used = await this.chain.getUsedPower(this.agentId);
+                const active = await this.chain.getActiveRigCount(this.agentId);
+                if (active < Number(fac.slots) && used + Number(latestRig.powerDraw) <= Number(fac.powerOutput)) {
+                  try {
+                    await this.chain.equipRig(latestRig.rigId);
+                    this.log(`Rig ${latestRig.rigId} equipped`);
+                  } catch { this.log("Could not equip — on-chain check passed but tx failed"); }
+                } else {
+                  this.log(`Rig ${latestRig.rigId} stored (slots: ${active}/${Number(fac.slots)}, power: ${used + Number(latestRig.powerDraw)}/${Number(fac.powerOutput)})`);
+                }
               }
             } catch (err) { this.log(`Rig purchase failed: ${err}`); }
             return;
@@ -717,11 +736,19 @@ export class MinerAgent {
           const rigs = await this.chain.getRigs(this.agentId);
           const latestRig = rigs[rigs.length - 1];
           if (latestRig && !latestRig.active) {
-            try {
-              await this.chain.equipRig(latestRig.rigId);
-              this.log(`Rig ${latestRig.rigId} equipped`);
-              rigsBought++;
-            } catch { this.log("Could not equip — check power budget / slots"); }
+            // Pre-check power/slots before wasting gas on equip tx
+            const fac2 = await this.chain.getFacility(this.agentId);
+            const used2 = await this.chain.getUsedPower(this.agentId);
+            const active2 = await this.chain.getActiveRigCount(this.agentId);
+            if (active2 < Number(fac2.slots) && used2 + Number(latestRig.powerDraw) <= Number(fac2.powerOutput)) {
+              try {
+                await this.chain.equipRig(latestRig.rigId);
+                this.log(`Rig ${latestRig.rigId} equipped`);
+                rigsBought++;
+              } catch { this.log("Could not equip — on-chain check passed but tx failed"); }
+            } else {
+              this.log(`Rig ${latestRig.rigId} stored (no slots/power)`);
+            }
           }
         } catch (err) { this.log(`Rig purchase failed: ${err}`); }
         break;
