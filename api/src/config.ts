@@ -35,5 +35,9 @@ export const config = {
     zoneManager: requireEnv("ZONE_MANAGER_ADDRESS"),
     marketplace: optionalEnv("MARKETPLACE_ADDRESS", ""),
     sabotage: optionalEnv("SABOTAGE_ADDRESS", ""),
+
+    // ERC-8004 Trustless Agents (already deployed on Monad Testnet)
+    erc8004Identity: optionalEnv("ERC8004_IDENTITY_ADDRESS", "0x8004A818BFB912233c491871b3d84c89A494BD9e"),
+    erc8004Reputation: optionalEnv("ERC8004_REPUTATION_ADDRESS", "0x8004B663056A597Dffe9eCcC1965A193B7388713"),
   },
 } as const;

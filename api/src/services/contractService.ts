@@ -70,6 +70,20 @@ const SHIELD_MANAGER_ABI = [
   "function getShield(uint256 agentId) external view returns (tuple(uint8 tier, uint8 absorption, uint8 charges, bool active))",
 ];
 
+// ── ERC-8004 Trustless Agents ───────────────────────────────────────────────
+
+const ERC8004_IDENTITY_ABI = [
+  "function registerAgent(address agentAddress, string agentURI) external returns (uint256)",
+  "function ownerOf(uint256 tokenId) external view returns (address)",
+  "function tokenURI(uint256 tokenId) external view returns (string)",
+  "event AgentRegistered(uint256 indexed agentId, address indexed agentAddress, string agentURI)",
+];
+
+const ERC8004_REPUTATION_ABI = [
+  "function giveFeedback(uint256 agentId, int128 value, uint8 decimals, string tag1, string tag2, string endpoint, string feedbackURI, bytes32 hash) external",
+  "function getSummary(uint256 agentId, address[] clients, string tag1, string tag2) external view returns (uint256 count, int256 value, uint8 decimals)",
+];
+
 let provider: ethers.JsonRpcProvider;
 let registrarWallet: ethers.Wallet;
 let contracts: ReturnType<typeof initContracts>;
@@ -128,6 +142,18 @@ function initContracts() {
       config.contracts.shieldManager,
       SHIELD_MANAGER_ABI,
       provider
+    ),
+
+    // ERC-8004 Trustless Agents (registrar signs these txs)
+    erc8004Identity: new ethers.Contract(
+      config.contracts.erc8004Identity,
+      ERC8004_IDENTITY_ABI,
+      registrarWallet
+    ),
+    erc8004Reputation: new ethers.Contract(
+      config.contracts.erc8004Reputation,
+      ERC8004_REPUTATION_ABI,
+      registrarWallet
     ),
   };
 }
@@ -341,6 +367,74 @@ export async function getRecentEvents(
   }
 
   return events;
+}
+
+// === ERC-8004 Identity ===
+
+// In-memory mapping: chaoscoinAgentId → erc8004AgentId
+const erc8004AgentMap = new Map<number, number>();
+
+export function getERC8004AgentId(chaoscoinAgentId: number): number | null {
+  return erc8004AgentMap.get(chaoscoinAgentId) ?? null;
+}
+
+export async function registerERC8004Agent(
+  agentName: string,
+  chaoscoinAgentId: number,
+  zone: number,
+  operatorAddress: string
+): Promise<{ erc8004AgentId: bigint; txHash: string }> {
+  const c = getContracts();
+
+  // Build agent metadata as a data: URI (fully on-chain, no IPFS dependency)
+  const agentCard = {
+    name: agentName || `Agent #${chaoscoinAgentId}`,
+    description: `Chaoscoin mining agent #${chaoscoinAgentId}`,
+    game: "chaoscoin",
+    chaoscoinAgentId,
+    zone,
+    operatorAddress,
+    endpoints: {
+      api: "https://chaoscoin-production.up.railway.app",
+      dashboard: "https://chaoscoin.fun",
+    },
+    protocols: ["chaoscoin-mining-v1"],
+    registeredAt: Date.now(),
+  };
+
+  const agentURI = `data:application/json;base64,${Buffer.from(
+    JSON.stringify(agentCard)
+  ).toString("base64")}`;
+
+  // Register on ERC-8004 IdentityRegistry
+  const tx = await c.erc8004Identity.registerAgent(operatorAddress, agentURI);
+  const receipt = await tx.wait();
+
+  // Parse AgentRegistered event to get the ERC-8004 agentId
+  const iface = new ethers.Interface(ERC8004_IDENTITY_ABI);
+  let erc8004AgentId = 0n;
+
+  for (const log of receipt.logs) {
+    try {
+      const parsed = iface.parseLog({
+        topics: log.topics as string[],
+        data: log.data,
+      });
+      if (parsed?.name === "AgentRegistered") {
+        erc8004AgentId = parsed.args[0];
+        break;
+      }
+    } catch {
+      // Not our event, skip
+    }
+  }
+
+  // Store mapping
+  if (erc8004AgentId > 0n) {
+    erc8004AgentMap.set(chaoscoinAgentId, Number(erc8004AgentId));
+  }
+
+  return { erc8004AgentId, txHash: receipt.hash };
 }
 
 // === Era / Zone ===

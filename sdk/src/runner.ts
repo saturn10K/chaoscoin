@@ -77,6 +77,7 @@ interface SavedWallet {
   address: string;
   privateKey: string;
   agentId?: number;
+  erc8004AgentId?: number;
 }
 
 function loadWallets(): SavedWallet[] | null {
@@ -136,7 +137,7 @@ async function main() {
       const sw = savedWallets[i];
       const wallet = new ethers.Wallet(sw.privateKey, provider);
       agentWallets.push(wallet);
-      console.log(`Agent ${i + 1} (${sw.label}): ${wallet.address}${sw.agentId ? ` → Agent #${sw.agentId}` : ""}`);
+      console.log(`Agent ${i + 1} (${sw.label}): ${wallet.address}${sw.agentId ? ` → Agent #${sw.agentId}` : ""}${sw.erc8004AgentId ? ` [ERC-8004 #${sw.erc8004AgentId}]` : ""}`);
     }
     // Create wallets for any new agents beyond the saved count
     if (existingCount < AGENT_CONFIGS.length) {

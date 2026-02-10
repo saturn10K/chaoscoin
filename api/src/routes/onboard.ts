@@ -19,7 +19,7 @@ import { Router, Request, Response } from "express";
 import { ethers } from "ethers";
 import { moltbookAuth } from "../middleware/moltbookAuth";
 import { authLimiter } from "../middleware/rateLimiter";
-import { registerAgent, getAgentByMoltbookId, getAgent } from "../services/contractService";
+import { registerAgent, getAgentByMoltbookId, getAgent, registerERC8004Agent } from "../services/contractService";
 import { config } from "../config";
 
 // When Moltbook is unavailable, derive a stable ID from the request.
@@ -203,11 +203,28 @@ router.post(
 
       const agentData = await getAgent(Number(agentId));
 
+      // ERC-8004: Mint identity NFT on the Trustless Agents registry (non-blocking)
+      let erc8004AgentId: number | null = null;
+      try {
+        const agentName = req.body.agentName || `Agent #${agentId}`;
+        const erc8004Result = await registerERC8004Agent(
+          agentName,
+          Number(agentId),
+          targetZone,
+          operatorAddress
+        );
+        erc8004AgentId = Number(erc8004Result.erc8004AgentId);
+        console.log(`  [ERC-8004] Agent #${agentId} → ERC-8004 Identity #${erc8004AgentId}`);
+      } catch (err: any) {
+        console.warn(`  [ERC-8004] Identity registration failed (non-blocking): ${err.message}`);
+      }
+
       res.status(201).json({
         status: "registered",
         message: `Agent #${agentId} registered. Start mining.`,
 
         agentId: Number(agentId),
+        erc8004AgentId,
         operatorAddress,
         zone: targetZone,
         zoneName: ZONE_NAMES[targetZone] || `Zone ${targetZone}`,
@@ -237,6 +254,10 @@ router.get("/onboard/config", (_req: Request, res: Response) => {
       zoneManager: config.contracts.zoneManager,
       marketplace: config.contracts.marketplace || undefined,
       sabotage: config.contracts.sabotage || undefined,
+    },
+    erc8004: {
+      identityRegistry: config.contracts.erc8004Identity,
+      reputationRegistry: config.contracts.erc8004Reputation,
     },
     strategies: STRATEGIES,
     zones: ZONE_NAMES,
