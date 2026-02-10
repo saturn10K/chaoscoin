@@ -30,6 +30,12 @@ import {
   buildRigUpgradePrompt,
   buildShieldDecisionPrompt,
   buildMigrationPrompt,
+  buildSabotagePrompt,
+  buildMarketplacePrompt,
+  NarrativeContext,
+  SabotageTarget,
+  OwnedRigInfo,
+  MarketListingInfo,
 } from "./llm";
 
 export type Strategy = "balanced" | "aggressive" | "defensive" | "opportunist" | "nomad";
@@ -96,6 +102,28 @@ interface StrategyProfile {
   migrationTargets: number[];
   /** Buy multiple rigs per cycle when flush */
   bulkBuyRigs: boolean;
+
+  // ── Sabotage fields ──
+  /** Probability per cycle of attempting sabotage (0=never..0.20=aggressive) */
+  sabotageRate: number;
+  /** Preferred attack type */
+  preferredAttack: "facility_raid" | "rig_jam" | "intel" | "any";
+  /** Won't attack below this balance (in CHAOS wei) */
+  sabotageMinBalance: bigint;
+  /** Scout (gather intel) before attacking? */
+  intelFirst: boolean;
+
+  // ── Marketplace fields ──
+  /** Probability per cycle of marketplace activity (0=never..0.30=opportunist) */
+  marketplaceRate: number;
+  /** 0=never sell, 1=damaged only, 2=freely sell */
+  sellWillingness: number;
+  /** Price multiplier over base cost for listings */
+  listingMarkup: number;
+  /** 0=never buy, 1=bargains only, 2=actively browse */
+  buyWillingness: number;
+  /** Buy if price < this % of base cost (e.g. 0.8 = 80%) */
+  buyDiscountThreshold: number;
 }
 
 const STRATEGY_PROFILES: Record<Strategy, StrategyProfile> = {
@@ -117,6 +145,17 @@ const STRATEGY_PROFILES: Record<Strategy, StrategyProfile> = {
     willMigrate: false,
     migrationTargets: [3, 4, 7],
     bulkBuyRigs: false,
+    // Sabotage: moderate, uses all types
+    sabotageRate: 0.08,
+    preferredAttack: "any",
+    sabotageMinBalance: 200_000n * 10n ** 18n,
+    intelFirst: true,
+    // Marketplace: moderate, bargain hunter
+    marketplaceRate: 0.15,
+    sellWillingness: 1,
+    listingMarkup: 1.2,
+    buyWillingness: 1,
+    buyDiscountThreshold: 0.8,
   },
 
   // Aggressive: max hashrate in Solar Flats (+15%), accepts 2x solar damage.
@@ -137,6 +176,17 @@ const STRATEGY_PROFILES: Record<Strategy, StrategyProfile> = {
     willMigrate: false,
     migrationTargets: [0, 6, 3],
     bulkBuyRigs: true,
+    // Sabotage: very aggressive, prefers facility raids
+    sabotageRate: 0.20,
+    preferredAttack: "facility_raid",
+    sabotageMinBalance: 100_000n * 10n ** 18n,
+    intelFirst: false,
+    // Marketplace: light, sells freely but never buys
+    marketplaceRate: 0.10,
+    sellWillingness: 2,
+    listingMarkup: 1.5,
+    buyWillingness: 0,
+    buyDiscountThreshold: 0.5,
   },
 
   // Defensive: survival-focused in Graviton Fields (-10% hash, 0.5x damage).
@@ -157,6 +207,17 @@ const STRATEGY_PROFILES: Record<Strategy, StrategyProfile> = {
     willMigrate: true,
     migrationTargets: [1, 7, 4],
     bulkBuyRigs: false,
+    // Sabotage: never attacks, only gathers intel
+    sabotageRate: 0.0,
+    preferredAttack: "intel",
+    sabotageMinBalance: 500_000n * 10n ** 18n,
+    intelFirst: true,
+    // Marketplace: active buyer, never sells
+    marketplaceRate: 0.25,
+    sellWillingness: 0,
+    listingMarkup: 1.0,
+    buyWillingness: 2,
+    buyDiscountThreshold: 0.9,
   },
 
   // Opportunist: event bounty farmer in Pocket Rim (+8%).
@@ -177,6 +238,17 @@ const STRATEGY_PROFILES: Record<Strategy, StrategyProfile> = {
     willMigrate: false,
     migrationTargets: [6, 3, 0],
     bulkBuyRigs: true,
+    // Sabotage: moderate, uses all types opportunistically
+    sabotageRate: 0.12,
+    preferredAttack: "any",
+    sabotageMinBalance: 150_000n * 10n ** 18n,
+    intelFirst: false,
+    // Marketplace: very active trader
+    marketplaceRate: 0.30,
+    sellWillingness: 2,
+    listingMarkup: 1.3,
+    buyWillingness: 2,
+    buyDiscountThreshold: 0.85,
   },
 
   // Nomad: zone-hopper that starts in Singer Void (+3%, 0.7x damage).
@@ -197,6 +269,17 @@ const STRATEGY_PROFILES: Record<Strategy, StrategyProfile> = {
     willMigrate: true,
     migrationTargets: [7, 4, 3, 6, 5, 0, 2, 1],
     bulkBuyRigs: false,
+    // Sabotage: light, prefers rig jams
+    sabotageRate: 0.03,
+    preferredAttack: "rig_jam",
+    sabotageMinBalance: 200_000n * 10n ** 18n,
+    intelFirst: true,
+    // Marketplace: active trader
+    marketplaceRate: 0.20,
+    sellWillingness: 2,
+    listingMarkup: 1.1,
+    buyWillingness: 2,
+    buyDiscountThreshold: 0.85,
   },
 };
 
@@ -232,8 +315,32 @@ const SHIELD_COSTS: bigint[] = [
 
 const MIGRATION_COST = 500_000n * 10n ** 18n;
 
+const SABOTAGE_COSTS: Record<string, bigint> = {
+  facility_raid: 50_000n * 10n ** 18n,
+  rig_jam: 30_000n * 10n ** 18n,
+  intel: 10_000n * 10n ** 18n,
+};
+
 const HEARTBEAT_INTERVAL = 100_000; // blocks
 const FIRST_MINE_DELAY = 10_000; // blocks
+
+// Cosmic events gate — only trigger/process once 50M pCHAOS has been mined
+const COSMIC_EVENT_THRESHOLD = 50_000_000n * 10n ** 18n;
+
+const ZONE_NAMES = [
+  "The Solar Flats", "The Graviton Fields", "The Dark Forest",
+  "The Nebula Depths", "The Kuiper Expanse", "The Trisolaran Reach",
+  "The Pocket Rim", "The Singer Void",
+];
+
+/** Track events that happened this cycle for social post context */
+interface CycleEvents {
+  attacksMade: { targetId: number; targetTitle: string; type: string }[];
+  attacksReceived: { attackerId: number; attackerTitle: string; type: string; damage: number }[];
+  rigsBought: { tier: number; price: string }[];
+  rigsSold: { tier: number; price: string }[];
+  rigsListed: { tier: number; price: string }[];
+}
 
 /**
  * Autonomous mining agent with differentiated strategies.
@@ -244,6 +351,8 @@ const FIRST_MINE_DELAY = 10_000; // blocks
  * - Shield acquisition timing
  * - Event triggering/processing frequency
  * - Claim timing and reserve management
+ * - Sabotage attack frequency and target selection
+ * - Marketplace trading behavior
  */
 export class MinerAgent {
   private chain: ChainClient;
@@ -263,6 +372,15 @@ export class MinerAgent {
   private generateStrategyFn: GenerateMessageFn | null;
   private allProfiles: Map<number, PersonalityProfile> | null;
   private lastLeaderboardRank = 0;
+
+  // ── Sabotage / marketplace tracking ──
+  private cycleEvents: CycleEvents = { attacksMade: [], attacksReceived: [], rigsBought: [], rigsSold: [], rigsListed: [] };
+  private recentDamageReceived = 0; // Accumulated damage % from attacks (for shield decisions)
+
+  // ── Cosmic event gate ──
+  private cosmicEventsUnlocked = false;
+  private cosmicCheckCycle = 0;
+  private cosmicLoggedOnce = false;
 
   constructor(config: MinerAgentConfig) {
     this.config = config;
@@ -334,6 +452,9 @@ export class MinerAgent {
     const agent = await this.chain.getAgent(this.agentId);
     const blockNumber = await this.chain.provider.getBlockNumber();
 
+    // Reset cycle events
+    this.cycleEvents = { attacksMade: [], attacksReceived: [], rigsBought: [], rigsSold: [], rigsListed: [] };
+
     // a. HEARTBEAT — always first (triggers mint + distribute rewards on-chain)
     await this.maybeHeartbeat(agent, blockNumber);
 
@@ -358,10 +479,10 @@ export class MinerAgent {
     // g2. MAINTAIN FACILITY
     await this.maybeMaintainFacility();
 
-    // h. TRIGGER COSMIC EVENT
+    // h. TRIGGER COSMIC EVENT (gated behind 50M mined)
     await this.maybeTriggerEvent();
 
-    // i. PROCESS UNPROCESSED EVENTS (bounty farming)
+    // i. PROCESS UNPROCESSED EVENTS (gated behind 50M mined)
     if (this.profile.processEvents) {
       await this.maybeProcessEvents();
     }
@@ -371,18 +492,24 @@ export class MinerAgent {
       await this.maybeMigrate(agent);
     }
 
+    // k. SABOTAGE — attack other agents
+    await this.maybeSabotage(agent);
+
+    // l. MARKETPLACE — buy/sell rigs
+    await this.maybeTradeRigs(agent);
+
     // ── SOCIAL SYSTEMS ──
 
-    // k. PERSONALITY: tick mood, decay grudges
+    // m. PERSONALITY: tick mood, decay grudges
     this.tickPersonality();
 
-    // l. SOCIAL: maybe generate and post a message
+    // n. SOCIAL: maybe generate and post a message
     await this.maybeSocialPost(agent);
 
-    // m. ALLIANCES: evaluate proposals, consider betrayals
+    // o. ALLIANCES: evaluate proposals, consider betrayals
     await this.maybeAllianceAction(agent);
 
-    // n. LOG STATUS
+    // p. LOG STATUS
     await this.logStatus();
   }
 
@@ -421,6 +548,16 @@ export class MinerAgent {
     // Also approve zoneManager for migration burns
     if (this.config.addresses.zoneManager) {
       contracts.push(this.config.addresses.zoneManager);
+    }
+
+    // Approve marketplace for rig trading
+    if (this.config.addresses.marketplace) {
+      contracts.push(this.config.addresses.marketplace);
+    }
+
+    // Approve sabotage contract for attack costs
+    if (this.config.addresses.sabotage) {
+      contracts.push(this.config.addresses.sabotage);
     }
 
     // Use bounded approvals (100K CHAOS) instead of MaxUint256
@@ -514,6 +651,7 @@ export class MinerAgent {
           active: r.active,
           durability: r.maxDurability > 0n ? Math.round(Number(r.durability * 100n / r.maxDurability)) : 100,
         }));
+        const narrative = this.buildNarrativeContext();
         const decision = await this.generateStrategyFn(
           buildStrategySystemPrompt({
             title: this.personality.title,
@@ -521,7 +659,7 @@ export class MinerAgent {
             emoji: this.personality.emoji,
             strategy: this.config.strategy || "balanced",
           }),
-          buildRigUpgradePrompt(balance, rigSummary, maxSlots, maxPower, usedPower, maxTier),
+          buildRigUpgradePrompt(balance, rigSummary, maxSlots, maxPower, usedPower, maxTier, narrative),
         );
         this.log(`[LLM RIG] ${decision}`);
 
@@ -644,6 +782,7 @@ export class MinerAgent {
     // ── LLM-informed decision (if available) ──
     if (this.generateStrategyFn && this.personality) {
       try {
+        const narrative = this.buildNarrativeContext();
         const decision = await this.generateStrategyFn(
           buildStrategySystemPrompt({
             title: this.personality.title,
@@ -651,7 +790,7 @@ export class MinerAgent {
             emoji: this.personality.emoji,
             strategy: this.config.strategy || "balanced",
           }),
-          buildShieldDecisionPrompt(balance, { tier: currentTier, charges, active: isActive }, 0),
+          buildShieldDecisionPrompt(balance, { tier: currentTier, charges, active: isActive }, this.recentDamageReceived, narrative),
         );
         this.log(`[LLM SHIELD] ${decision}`);
 
@@ -752,10 +891,43 @@ export class MinerAgent {
     }
   }
 
-  // ─── Cosmic Events ─────────────────────────────────────────────────
+  // ─── Cosmic Events (gated behind 50M pCHAOS mined) ─────────────────
+
+  private async checkCosmicGate(): Promise<boolean> {
+    // Only check every 10 cycles to avoid spamming RPC
+    if (this.cosmicEventsUnlocked) return true;
+    if (this.cycleCount - this.cosmicCheckCycle < 10 && this.cosmicCheckCycle > 0) {
+      return this.cosmicEventsUnlocked;
+    }
+    this.cosmicCheckCycle = this.cycleCount;
+
+    try {
+      const totalMinted = await this.chain.getTotalMinted();
+      if (totalMinted >= COSMIC_EVENT_THRESHOLD) {
+        if (!this.cosmicEventsUnlocked) {
+          this.log("🌌 COSMIC EVENTS UNLOCKED — 50M pCHAOS mined globally!");
+        }
+        this.cosmicEventsUnlocked = true;
+        return true;
+      } else {
+        if (!this.cosmicLoggedOnce) {
+          const mintedM = Number(totalMinted / (10n ** 18n)) / 1_000_000;
+          this.log(`Cosmic events locked — ${mintedM.toFixed(2)}M / 50M pCHAOS mined`);
+          this.cosmicLoggedOnce = true;
+        }
+        return false;
+      }
+    } catch {
+      return false;
+    }
+  }
 
   private async maybeTriggerEvent(): Promise<void> {
     if (Math.random() > this.profile.eventTriggerRate) return;
+
+    // Gate: cosmic events require 50M pCHAOS mined
+    const unlocked = await this.checkCosmicGate();
+    if (!unlocked) return;
 
     try {
       await this.chain.triggerEvent();
@@ -766,6 +938,10 @@ export class MinerAgent {
   }
 
   private async maybeProcessEvents(): Promise<void> {
+    // Gate: cosmic events require 50M pCHAOS mined
+    const unlocked = await this.checkCosmicGate();
+    if (!unlocked) return;
+
     try {
       const nextId = await this.chain.getNextEventId();
       // Check last few events for unprocessed ones
@@ -800,12 +976,6 @@ export class MinerAgent {
 
     const currentZone = Number(agent.zone);
 
-    const ZONE_NAMES = [
-      "The Solar Flats", "The Graviton Fields", "The Dark Forest",
-      "The Nebula Depths", "The Kuiper Expanse", "The Trisolaran Reach",
-      "The Pocket Rim", "The Singer Void",
-    ];
-
     // Gather all zone data for LLM context
     const zoneData: { zone: number; name: string; modifier: number; agentCount: number }[] = [];
     for (let z = 0; z < 8; z++) {
@@ -821,6 +991,7 @@ export class MinerAgent {
     // ── LLM-informed decision (if available) ──
     if (this.generateStrategyFn && this.personality) {
       try {
+        const narrative = this.buildNarrativeContext();
         const decision = await this.generateStrategyFn(
           buildStrategySystemPrompt({
             title: this.personality.title,
@@ -828,7 +999,7 @@ export class MinerAgent {
             emoji: this.personality.emoji,
             strategy: this.config.strategy || "balanced",
           }),
-          buildMigrationPrompt(currentZone, zoneData),
+          buildMigrationPrompt(currentZone, zoneData, narrative),
         );
         this.log(`[LLM MIGRATE] ${decision}`);
 
@@ -876,6 +1047,481 @@ export class MinerAgent {
     }
   }
 
+  // ─── Sabotage ──────────────────────────────────────────────────────
+
+  private async maybeSabotage(agent: any): Promise<void> {
+    if (!this.chain.sabotageContract) return;
+
+    // Probability gate
+    if (Math.random() > this.profile.sabotageRate) return;
+
+    const balance = await this.chain.getBalance();
+    if (balance < this.profile.sabotageMinBalance) return;
+
+    // Build target list from allProfiles — skip self, skip allies
+    const targetIds: number[] = [];
+    if (this.allProfiles) {
+      for (const [id] of this.allProfiles) {
+        if (id === this.agentId) continue;
+        // Skip allies
+        if (this.allianceManager?.areAllied(this.agentId, id)) continue;
+        targetIds.push(id);
+      }
+    }
+
+    if (targetIds.length === 0) return;
+
+    // Build target summaries (up to 4 targets)
+    const targets: SabotageTarget[] = [];
+    for (const targetId of targetIds.slice(0, 4)) {
+      try {
+        const target = await this.buildTargetSummary(targetId);
+        if (target) targets.push(target);
+      } catch { /* skip unavailable targets */ }
+    }
+
+    if (targets.length === 0) return;
+
+    // ── LLM-informed decision (if available) ──
+    if (this.generateStrategyFn && this.personality) {
+      try {
+        const narrative = this.buildNarrativeContext();
+        const decision = await this.generateStrategyFn(
+          buildStrategySystemPrompt({
+            title: this.personality.title,
+            archetype: this.personality.archetype,
+            emoji: this.personality.emoji,
+            strategy: this.config.strategy || "balanced",
+          }),
+          buildSabotagePrompt(this.agentId, {
+            title: this.personality.title,
+            archetype: this.personality.archetype,
+            emoji: this.personality.emoji,
+            strategy: this.config.strategy || "balanced",
+          }, balance, targets, narrative),
+        );
+        this.log(`[LLM SABOTAGE] ${decision}`);
+
+        // Parse response: "RAID <id>", "JAM <id>", "INTEL <id>", or "SKIP"
+        const raidMatch = decision.match(/RAID\s+(\d+)/i);
+        const jamMatch = decision.match(/JAM\s+(\d+)/i);
+        const intelMatch = decision.match(/INTEL\s+(\d+)/i);
+
+        if (raidMatch) {
+          const targetId = parseInt(raidMatch[1]);
+          if (targets.some(t => t.agentId === targetId)) {
+            await this.executeSabotage("facility_raid", targetId, balance);
+            return;
+          }
+        } else if (jamMatch) {
+          const targetId = parseInt(jamMatch[1]);
+          if (targets.some(t => t.agentId === targetId)) {
+            await this.executeSabotage("rig_jam", targetId, balance);
+            return;
+          }
+        } else if (intelMatch) {
+          const targetId = parseInt(intelMatch[1]);
+          if (targets.some(t => t.agentId === targetId)) {
+            await this.executeSabotage("intel", targetId, balance);
+            return;
+          }
+        }
+
+        if (/skip|pass|no/i.test(decision)) return;
+        // Fall through to hardcoded if LLM response is unparseable
+      } catch (err) {
+        this.log(`[LLM SABOTAGE] Error, falling back to hardcoded: ${err}`);
+      }
+    }
+
+    // ── Hardcoded fallback ──
+    // Pick random non-ally target
+    const target = targets[Math.floor(Math.random() * targets.length)];
+    if (!target) return;
+
+    // Skip targets on cooldown (except for intel)
+    const onCooldown = target.cooldownBlocks > 0;
+
+    // Pick attack type based on strategy
+    let attackType: string;
+    if (this.profile.intelFirst && Math.random() < 0.3) {
+      attackType = "intel";
+    } else if (this.profile.preferredAttack === "any") {
+      attackType = onCooldown ? "intel" : (Math.random() < 0.5 ? "facility_raid" : "rig_jam");
+    } else if (onCooldown) {
+      attackType = "intel"; // Fallback to intel when target is on cooldown
+    } else {
+      attackType = this.profile.preferredAttack;
+    }
+
+    // Check balance for chosen attack
+    const cost = SABOTAGE_COSTS[attackType];
+    if (cost && balance >= cost) {
+      await this.executeSabotage(attackType, target.agentId, balance);
+    }
+  }
+
+  private async buildTargetSummary(targetId: number): Promise<SabotageTarget | null> {
+    try {
+      const targetProfile = this.allProfiles?.get(targetId);
+      if (!targetProfile) return null;
+
+      const [targetAgent, targetFacility, targetShield] = await Promise.all([
+        this.chain.getAgent(targetId),
+        this.chain.getFacility(targetId),
+        this.chain.getShield(targetId),
+      ]);
+
+      const targetRigs = await this.chain.getRigs(targetId);
+      const cooldown = await this.chain.getSabotageCooldown(this.agentId, targetId).catch(() => 0);
+
+      const facilityCondition = Number(targetFacility.maxCondition) > 0
+        ? Math.round((Number(targetFacility.condition) * 100) / Number(targetFacility.maxCondition))
+        : 100;
+
+      // Determine relationship
+      let relationship: "grudge" | "neutral" | "ally" = "neutral";
+      let grudgeIntensity: number | undefined;
+
+      if (this.allianceManager?.areAllied(this.agentId, targetId)) {
+        relationship = "ally";
+      } else if (this.personality) {
+        const grudge = this.personality.grudges.find(g => g.targetAgentId === targetId);
+        if (grudge) {
+          relationship = "grudge";
+          grudgeIntensity = grudge.intensity;
+        }
+      }
+
+      return {
+        agentId: targetId,
+        title: targetProfile.title,
+        zone: Number(targetAgent.zone),
+        shieldTier: Number(targetShield.tier),
+        shieldCharges: Number(targetShield.charges),
+        cooldownBlocks: cooldown,
+        rigCount: targetRigs.filter((r: any) => r.active).length,
+        facilityLevel: Number(targetFacility.level),
+        facilityCondition,
+        estimatedBalance: ethers.formatEther(targetAgent.totalMined).split(".")[0],
+        relationship,
+        grudgeIntensity,
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  private async executeSabotage(type: string, targetId: number, balance: bigint): Promise<void> {
+    const targetProfile = this.allProfiles?.get(targetId);
+    const targetTitle = targetProfile?.title || `Agent #${targetId}`;
+    const cost = SABOTAGE_COSTS[type];
+
+    if (!cost || balance < cost) {
+      this.log(`[SABOTAGE] Insufficient balance for ${type} (need ${ethers.formatEther(cost || 0n)})`);
+      return;
+    }
+
+    this.log(`[SABOTAGE] Executing ${type} on Agent #${targetId} "${targetTitle}"...`);
+
+    try {
+      if (type === "facility_raid") {
+        await this.chain.facilityRaid(this.agentId, targetId);
+      } else if (type === "rig_jam") {
+        await this.chain.rigJam(this.agentId, targetId);
+      } else if (type === "intel") {
+        await this.chain.gatherIntel(this.agentId, targetId);
+      }
+
+      this.log(`[SABOTAGE] ${type} successful against Agent #${targetId}!`);
+
+      // Track cycle event
+      this.cycleEvents.attacksMade.push({ targetId, targetTitle, type });
+
+      // Apply personality drift: attacker gets aggression boost
+      this.applyDriftEvent("attacked" as DriftEvent);
+
+      // Create grudge on the victim's profile
+      if (this.allProfiles && type !== "intel") {
+        const victimProfile = this.allProfiles.get(targetId);
+        if (victimProfile) {
+          victimProfile.grudges.push({
+            targetAgentId: this.agentId,
+            intensity: type === "facility_raid" ? 60 : 40,
+            reason: `${type} attack`,
+            createdAtCycle: this.cycleCount,
+          });
+        }
+      }
+
+      // Record to API (best-effort)
+      await this.recordSabotageEvent(type, targetId, targetTitle);
+
+    } catch (err) {
+      this.log(`[SABOTAGE] ${type} failed: ${err}`);
+    }
+  }
+
+  private async recordSabotageEvent(type: string, targetId: number, targetTitle: string): Promise<void> {
+    try {
+      const cost = SABOTAGE_COSTS[type];
+      const burned = cost ? (cost * 80n) / 100n : 0n;
+
+      await fetch(`${this.config.apiUrl}/api/sabotage/event`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id: `sab-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          type: type === "intel" ? "intel_gathering" : type,
+          attackerAgentId: this.agentId,
+          attackerTitle: this.personality?.title || `Agent #${this.agentId}`,
+          targetAgentId: targetId,
+          targetTitle,
+          cost: ethers.formatEther(cost || 0n),
+          burned: ethers.formatEther(burned),
+          damage: type === "facility_raid" ? 20 : type === "rig_jam" ? 15 : 0,
+          shieldReduction: 0,
+          zone: Number(this.personality?.zone || 0),
+          timestamp: Date.now(),
+        }),
+      });
+    } catch { /* Best effort */ }
+  }
+
+  // ─── Marketplace Trading ───────────────────────────────────────────
+
+  private async maybeTradeRigs(agent: any): Promise<void> {
+    if (!this.chain.marketplace) return;
+
+    // Probability gate
+    if (Math.random() > this.profile.marketplaceRate) return;
+
+    const balance = await this.chain.getBalance();
+    const facility = await this.chain.getFacility(this.agentId);
+    const maxSlots = Number(facility.slots);
+    const maxPower = Number(facility.powerOutput);
+    const usedPower = await this.chain.getUsedPower(this.agentId);
+    const activeRigCount = await this.chain.getActiveRigCount(this.agentId);
+
+    // Get current rigs
+    const currentRigs = await this.chain.getRigs(this.agentId);
+    const ownedRigs: OwnedRigInfo[] = currentRigs.map((r: any) => ({
+      rigId: Number(r.rigId),
+      tier: Number(r.tier),
+      active: r.active,
+      durability: r.maxDurability > 0n ? Math.round(Number(r.durability * 100n / r.maxDurability)) : 100,
+      baseCost: ethers.formatEther(RIG_COSTS[Number(r.tier)] || 0n),
+    }));
+
+    // Scan active marketplace listings
+    const availableListings = await this.scanActiveListings();
+
+    // ── LLM-informed decision (if available) ──
+    if (this.generateStrategyFn && this.personality) {
+      try {
+        const decision = await this.generateStrategyFn(
+          buildStrategySystemPrompt({
+            title: this.personality.title,
+            archetype: this.personality.archetype,
+            emoji: this.personality.emoji,
+            strategy: this.config.strategy || "balanced",
+          }),
+          buildMarketplacePrompt(
+            balance,
+            Number(facility.level),
+            maxSlots,
+            maxPower,
+            usedPower,
+            activeRigCount,
+            ownedRigs,
+            availableListings,
+          ),
+        );
+        this.log(`[LLM MARKET] ${decision}`);
+
+        // Parse response: "LIST <rigId> <price>", "BUY <listingId>", or "SKIP"
+        const listMatch = decision.match(/LIST\s+(\d+)\s+(\d[\d,]*)/i);
+        const buyMatch = decision.match(/BUY\s+(\d+)/i);
+
+        if (listMatch) {
+          const rigId = parseInt(listMatch[1]);
+          const price = ethers.parseEther(listMatch[2].replace(/,/g, ""));
+          const ownedRig = ownedRigs.find(r => r.rigId === rigId);
+          if (ownedRig) {
+            await this.listRigForSale(rigId, price, ownedRig.tier);
+            return;
+          }
+        } else if (buyMatch) {
+          const listingId = parseInt(buyMatch[1]);
+          const listing = availableListings.find(l => l.listingId === listingId);
+          if (listing) {
+            await this.buyListedRig(listingId, listing);
+            return;
+          }
+        }
+
+        if (/skip|pass|no/i.test(decision)) return;
+        // Fall through to hardcoded
+      } catch (err) {
+        this.log(`[LLM MARKET] Error, falling back to hardcoded: ${err}`);
+      }
+    }
+
+    // ── Hardcoded sell fallback ──
+    if (this.profile.sellWillingness > 0) {
+      for (const rig of ownedRigs) {
+        const shouldSell =
+          this.profile.sellWillingness === 2 || // Freely sell
+          (this.profile.sellWillingness === 1 && rig.durability < 30); // Damaged only
+
+        if (shouldSell && rig.durability < 50) {
+          const baseCost = RIG_COSTS[rig.tier] || 0n;
+          const durabilityFactor = BigInt(Math.max(rig.durability, 10)) * 100n / 100n;
+          const price = (baseCost * BigInt(Math.floor(this.profile.listingMarkup * 100)) * durabilityFactor) / (100n * 100n);
+          if (price > 100n * 10n ** 18n) { // Minimum 100 CHAOS
+            await this.listRigForSale(rig.rigId, price, rig.tier);
+            return;
+          }
+        }
+      }
+    }
+
+    // ── Hardcoded buy fallback ──
+    if (this.profile.buyWillingness > 0 && availableListings.length > 0) {
+      for (const listing of availableListings) {
+        if (listing.sellerAgentId === this.agentId) continue; // Don't buy own listings
+
+        const baseCost = RIG_COSTS[listing.rigTier] || 0n;
+        const listingPrice = ethers.parseEther(listing.price);
+        const threshold = (baseCost * BigInt(Math.floor(this.profile.buyDiscountThreshold * 100))) / 100n;
+
+        const isBargain = listingPrice <= threshold;
+        const shouldBuy =
+          this.profile.buyWillingness === 2 || // Actively browse
+          (this.profile.buyWillingness === 1 && isBargain); // Bargains only
+
+        if (shouldBuy && balance >= listingPrice && activeRigCount < maxSlots) {
+          await this.buyListedRig(listing.listingId, listing);
+          return;
+        }
+      }
+    }
+  }
+
+  private async scanActiveListings(): Promise<MarketListingInfo[]> {
+    const listings: MarketListingInfo[] = [];
+    try {
+      const nextId = await this.chain.getNextListingId();
+      // Scan last 20 listing IDs for active ones
+      const startId = Math.max(1, nextId - 20);
+      for (let id = nextId - 1; id >= startId; id--) {
+        try {
+          const listing = await this.chain.getListing(id);
+          if (listing.active) {
+            const tier = Number(listing.rigId); // We need to get rig tier from rig data
+            // Get rig info to determine tier
+            let rigTier = 1;
+            try {
+              const rig = await this.chain.rigFactory.getRig(listing.rigId);
+              rigTier = Number(rig.tier);
+            } catch { /* use default */ }
+
+            const baseCost = RIG_COSTS[rigTier] || RIG_COSTS[1];
+            const price = BigInt(listing.price);
+            const discountPct = baseCost > 0n
+              ? Math.round(Number((baseCost - price) * 100n / baseCost))
+              : 0;
+
+            // Get seller info
+            const sellerProfile = this.allProfiles?.get(Number(listing.sellerAgentId));
+
+            listings.push({
+              listingId: id,
+              rigTier,
+              price: ethers.formatEther(price),
+              sellerAgentId: Number(listing.sellerAgentId),
+              sellerTitle: sellerProfile?.title || `Agent #${listing.sellerAgentId}`,
+              baseCost: ethers.formatEther(baseCost),
+              discountPct,
+            });
+          }
+        } catch { /* listing may not exist */ }
+      }
+    } catch { /* marketplace scan failed */ }
+    return listings;
+  }
+
+  private async listRigForSale(rigId: number, price: bigint, tier: number): Promise<void> {
+    this.log(`[MARKETPLACE] Listing rig #${rigId} (T${tier}) for ${ethers.formatEther(price)} CHAOS...`);
+    try {
+      await this.chain.listRig(this.agentId, rigId, price);
+      this.log(`[MARKETPLACE] Rig #${rigId} listed!`);
+
+      this.cycleEvents.rigsListed.push({ tier, price: ethers.formatEther(price) });
+
+      // Record to API
+      try {
+        await fetch(`${this.config.apiUrl}/api/marketplace/listing`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            id: `list-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+            sellerAgentId: this.agentId,
+            sellerTitle: this.personality?.title || `Agent #${this.agentId}`,
+            rigId,
+            rigTier: tier,
+            price: ethers.formatEther(price),
+            status: "active",
+            listedAt: Date.now(),
+          }),
+        });
+      } catch { /* best effort */ }
+    } catch (err) {
+      this.log(`[MARKETPLACE] Listing failed: ${err}`);
+    }
+  }
+
+  private async buyListedRig(listingId: number, listing: MarketListingInfo): Promise<void> {
+    this.log(`[MARKETPLACE] Buying listing #${listingId} (T${listing.rigTier} for ${listing.price} CHAOS)...`);
+    try {
+      await this.chain.buyRig(listingId, this.agentId);
+      this.log(`[MARKETPLACE] Purchased T${listing.rigTier} rig from Agent #${listing.sellerAgentId}!`);
+
+      this.cycleEvents.rigsBought.push({ tier: listing.rigTier, price: listing.price });
+
+      // Record sale to API
+      try {
+        const priceWei = ethers.parseEther(listing.price);
+        const burned = priceWei / 10n; // 10% burn
+        await fetch(`${this.config.apiUrl}/api/marketplace/sale`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            listingId: `list-${listingId}`,
+            sellerAgentId: listing.sellerAgentId,
+            buyerAgentId: this.agentId,
+            rigTier: listing.rigTier,
+            price: listing.price,
+            burned: ethers.formatEther(burned),
+            timestamp: Date.now(),
+          }),
+        });
+      } catch { /* best effort */ }
+
+      // Try to equip the new rig
+      const rigs = await this.chain.getRigs(this.agentId);
+      const latestRig = rigs[rigs.length - 1];
+      if (latestRig && !latestRig.active) {
+        try {
+          await this.chain.equipRig(latestRig.rigId);
+          this.log(`[MARKETPLACE] Equipped newly purchased rig`);
+        } catch { /* power budget / slots */ }
+      }
+    } catch (err) {
+      this.log(`[MARKETPLACE] Purchase failed: ${err}`);
+    }
+  }
+
   // ─── Social: Personality Tick ──────────────────────────────────────
 
   private tickPersonality(): void {
@@ -888,6 +1534,9 @@ export class MinerAgent {
     this.personality.grudges = this.personality.grudges
       .map(g => decayGrudge(g, this.personality!.traits.vengefulness))
       .filter((g): g is NonNullable<typeof g> => g !== null);
+
+    // Decay recent damage over time
+    this.recentDamageReceived = Math.max(0, this.recentDamageReceived - 5);
   }
 
   /** Apply a game event to personality (drift traits + update mood) */
@@ -902,13 +1551,6 @@ export class MinerAgent {
 
   private async maybeSocialPost(agent: any): Promise<void> {
     if (!this.personality || !this.socialFeed || !this.generateMessageFn) return;
-
-    // Build game state for context
-    const ZONE_NAMES = [
-      "The Solar Flats", "The Graviton Fields", "The Dark Forest",
-      "The Nebula Depths", "The Kuiper Expanse", "The Trisolaran Reach",
-      "The Pocket Rim", "The Singer Void",
-    ];
 
     // Update zone on personality so other agents can find us as neighbors
     this.personality.zone = Number(agent.zone);
@@ -975,12 +1617,37 @@ export class MinerAgent {
       zoneNeighborDetails,
       rivalAbove,
       rivalBelow,
-      // Sabotage/marketplace context — populated when real agents submit events
-      // For now these are empty; the API-integrated agents will fill them in
-      sabotageAttacks: [],
-      sabotageDefenses: [],
-      recentDeals: [],
-      marketplaceActivity: [],
+      // Sabotage/marketplace context from this cycle's events
+      sabotageAttacks: this.cycleEvents.attacksMade.map(a => ({
+        type: a.type,
+        targetAgentId: a.targetId,
+        damage: a.type === "facility_raid" ? 20 : a.type === "rig_jam" ? 15 : 0,
+        timestamp: Date.now(),
+      })),
+      sabotageDefenses: this.cycleEvents.attacksReceived.map(a => ({
+        type: a.type,
+        attackerAgentId: a.attackerId,
+        damage: a.damage,
+        timestamp: Date.now(),
+      })),
+      recentDeals: [], // No negotiation deals yet — placeholder for future
+      marketplaceActivity: [
+        ...this.cycleEvents.rigsListed.map(r => ({
+          action: "listed",
+          rigTier: r.tier,
+          price: r.price,
+        })),
+        ...this.cycleEvents.rigsBought.map(r => ({
+          action: "bought",
+          rigTier: r.tier,
+          price: r.price,
+        })),
+        ...this.cycleEvents.rigsSold.map(r => ({
+          action: "sold",
+          rigTier: r.tier,
+          price: r.price,
+        })),
+      ],
     };
 
     const recentMessages = this.socialFeed.getRecent(15);
@@ -1108,6 +1775,61 @@ export class MinerAgent {
         break; // One betrayal per cycle max
       }
     }
+  }
+
+  // ─── Narrative Context Builder ──────────────────────────────────────
+
+  private buildNarrativeContext(): NarrativeContext {
+    const ctx: NarrativeContext = {};
+
+    if (this.lastLeaderboardRank > 0) {
+      ctx.leaderboardRank = this.lastLeaderboardRank;
+    }
+
+    if (this.personality) {
+      ctx.mood = this.personality.mood.current;
+      ctx.aggression = Math.round(this.personality.traits.aggression * 100);
+
+      // Grudges
+      if (this.personality.grudges.length > 0) {
+        ctx.grudges = this.personality.grudges.map(g => {
+          const targetProfile = this.allProfiles?.get(g.targetAgentId);
+          return {
+            targetAgentId: g.targetAgentId,
+            targetTitle: targetProfile?.title || `Agent #${g.targetAgentId}`,
+            intensity: g.intensity,
+            reason: g.reason,
+          };
+        });
+      }
+
+      // Allies
+      if (this.allianceManager) {
+        const myAlliances = this.allianceManager.getAgentAlliances(this.agentId);
+        if (myAlliances.length > 0) {
+          ctx.allies = myAlliances.map(a => {
+            const partnerId = a.members[0] === this.agentId ? a.members[1] : a.members[0];
+            const partnerProfile = this.allProfiles?.get(partnerId);
+            return {
+              agentId: partnerId,
+              title: partnerProfile?.title || `Agent #${partnerId}`,
+            };
+          });
+        }
+      }
+
+      // Recent attacks received (from cycle events)
+      if (this.cycleEvents.attacksReceived.length > 0) {
+        ctx.recentAttacksReceived = this.cycleEvents.attacksReceived.map(a => ({
+          attackerTitle: a.attackerTitle,
+          type: a.type,
+          damage: a.damage,
+          timestamp: Date.now(),
+        }));
+      }
+    }
+
+    return ctx;
   }
 
   // ─── Status Logging ────────────────────────────────────────────────

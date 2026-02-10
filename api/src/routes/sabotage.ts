@@ -1,13 +1,45 @@
 /**
  * Sabotage API Routes — Serves sabotage attack logs, intel reports,
- * and destruction stats to the dashboard.
+ * and destruction stats to the dashboard. Data persists to disk.
  *
  * Agents POST attack results here, and the dashboard GETs them.
  */
 
 import { Router, Request, Response } from "express";
+import * as fs from "fs";
+import * as path from "path";
 
 const router = Router();
+
+// ═══════════════════════════════════════════════════════════════════════
+//  FILE-BASED PERSISTENCE
+// ═══════════════════════════════════════════════════════════════════════
+
+const DATA_DIR = path.join(__dirname, "../../data");
+const SABOTAGE_FILE = path.join(DATA_DIR, "sabotage-events.json");
+const NEGOTIATION_FILE = path.join(DATA_DIR, "negotiations.json");
+
+function loadFromFile<T>(file: string): T[] {
+  try {
+    return JSON.parse(fs.readFileSync(file, "utf-8"));
+  } catch {
+    return [];
+  }
+}
+
+const saveTimers: Map<string, NodeJS.Timeout> = new Map();
+function debouncedSave<T>(file: string, data: T[], max: number): void {
+  if (saveTimers.has(file)) return;
+  saveTimers.set(file, setTimeout(() => {
+    try {
+      fs.mkdirSync(DATA_DIR, { recursive: true });
+      fs.writeFileSync(file, JSON.stringify(data.slice(-max)));
+    } catch (err) {
+      console.error(`[sabotage] Failed to save ${file}:`, err);
+    }
+    saveTimers.delete(file);
+  }, 5000));
+}
 
 // ═══════════════════════════════════════════════════════════════════════
 //  TYPES
@@ -43,13 +75,15 @@ interface NegotiationEvent {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-//  IN-MEMORY STORES
+//  IN-MEMORY STORES (loaded from disk on startup)
 // ═══════════════════════════════════════════════════════════════════════
 
-const sabotageEvents: SabotageEvent[] = [];
-const negotiationEvents: NegotiationEvent[] = [];
+const sabotageEvents: SabotageEvent[] = loadFromFile<SabotageEvent>(SABOTAGE_FILE);
+const negotiationEvents: NegotiationEvent[] = loadFromFile<NegotiationEvent>(NEGOTIATION_FILE);
 const MAX_SABOTAGE = 500;
 const MAX_NEGOTIATIONS = 300;
+
+console.log(`[sabotage] Loaded ${sabotageEvents.length} sabotage events, ${negotiationEvents.length} negotiations from disk`);
 
 // ═══════════════════════════════════════════════════════════════════════
 //  SABOTAGE ENDPOINTS
@@ -97,6 +131,9 @@ router.post("/sabotage/event", (req: Request, res: Response) => {
     sabotageEvents.splice(0, sabotageEvents.length - MAX_SABOTAGE);
   }
 
+  // Persist to disk (debounced)
+  debouncedSave(SABOTAGE_FILE, sabotageEvents, MAX_SABOTAGE);
+
   res.json({ ok: true, totalEvents: sabotageEvents.length });
 });
 
@@ -130,6 +167,9 @@ router.post("/sabotage/negotiation", (req: Request, res: Response) => {
   if (negotiationEvents.length > MAX_NEGOTIATIONS) {
     negotiationEvents.splice(0, negotiationEvents.length - MAX_NEGOTIATIONS);
   }
+
+  // Persist to disk (debounced)
+  debouncedSave(NEGOTIATION_FILE, negotiationEvents, MAX_NEGOTIATIONS);
 
   res.json({ ok: true });
 });

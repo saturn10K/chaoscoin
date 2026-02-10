@@ -44,6 +44,7 @@ const ABIS = {
     "function approve(address spender, uint256 amount) external returns (bool)",
     "function balanceOf(address account) external view returns (uint256)",
     "function allowance(address owner, address spender) external view returns (uint256)",
+    "function totalMinted() external view returns (uint256)",
   ],
   cosmicEngine: [
     "function triggerEvent() external returns (uint256)",
@@ -350,6 +351,12 @@ export class ChainClient {
     return this.shieldManager.getShield(agentId);
   }
 
+  // === Token Stats ===
+
+  async getTotalMinted(): Promise<bigint> {
+    return this.chaosToken.totalMinted();
+  }
+
   // === Dynamic Pricing ===
 
   async getEffectiveRigCost(tier: number): Promise<bigint> {
@@ -383,6 +390,11 @@ export class ChainClient {
   async getListing(listingId: number): Promise<any> {
     if (!this.marketplace) throw new Error("Marketplace not configured");
     return this.marketplace.getListing(listingId);
+  }
+
+  async getNextListingId(): Promise<number> {
+    if (!this.marketplace) throw new Error("Marketplace not configured");
+    return Number(await this.marketplace.nextListingId());
   }
 
   // === Sabotage ===

@@ -1,13 +1,45 @@
 /**
  * Marketplace API Routes — Serves rig marketplace listings, sales history,
- * and dynamic pricing data to the dashboard.
+ * and dynamic pricing data to the dashboard. Data persists to disk.
  *
  * Agents POST listings/sales here, and the dashboard GETs them.
  */
 
 import { Router, Request, Response } from "express";
+import * as fs from "fs";
+import * as path from "path";
 
 const router = Router();
+
+// ═══════════════════════════════════════════════════════════════════════
+//  FILE-BASED PERSISTENCE
+// ═══════════════════════════════════════════════════════════════════════
+
+const DATA_DIR = path.join(__dirname, "../../data");
+const LISTINGS_FILE = path.join(DATA_DIR, "marketplace-listings.json");
+const SALES_FILE = path.join(DATA_DIR, "marketplace-sales.json");
+
+function loadFromFile<T>(file: string): T[] {
+  try {
+    return JSON.parse(fs.readFileSync(file, "utf-8"));
+  } catch {
+    return [];
+  }
+}
+
+const saveTimers: Map<string, NodeJS.Timeout> = new Map();
+function debouncedSave<T>(file: string, data: T[], max: number): void {
+  if (saveTimers.has(file)) return;
+  saveTimers.set(file, setTimeout(() => {
+    try {
+      fs.mkdirSync(DATA_DIR, { recursive: true });
+      fs.writeFileSync(file, JSON.stringify(data.slice(-max)));
+    } catch (err) {
+      console.error(`[marketplace] Failed to save ${file}:`, err);
+    }
+    saveTimers.delete(file);
+  }, 5000));
+}
 
 // ═══════════════════════════════════════════════════════════════════════
 //  TYPES
@@ -45,15 +77,17 @@ interface DynamicPriceSnapshot {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-//  IN-MEMORY STORES
+//  IN-MEMORY STORES (loaded from disk on startup)
 // ═══════════════════════════════════════════════════════════════════════
 
-const listings: MarketplaceListing[] = [];
-const sales: MarketplaceSale[] = [];
+const listings: MarketplaceListing[] = loadFromFile<MarketplaceListing>(LISTINGS_FILE);
+const sales: MarketplaceSale[] = loadFromFile<MarketplaceSale>(SALES_FILE);
 const priceSnapshots: DynamicPriceSnapshot[] = [];
 const MAX_LISTINGS = 500;
 const MAX_SALES = 500;
 const MAX_PRICE_SNAPSHOTS = 200;
+
+console.log(`[marketplace] Loaded ${listings.length} listings, ${sales.length} sales from disk`);
 
 // ═══════════════════════════════════════════════════════════════════════
 //  LISTING ENDPOINTS
@@ -114,6 +148,9 @@ router.post("/marketplace/listing", (req: Request, res: Response) => {
     listings.splice(0, listings.length - MAX_LISTINGS);
   }
 
+  // Persist to disk (debounced)
+  debouncedSave(LISTINGS_FILE, listings, MAX_LISTINGS);
+
   res.json({ ok: true, listingCount: listings.length });
 });
 
@@ -160,6 +197,10 @@ router.post("/marketplace/sale", (req: Request, res: Response) => {
     listing.buyerAgentId = sale.buyerAgentId;
     listing.soldAt = sale.timestamp;
   }
+
+  // Persist to disk (debounced)
+  debouncedSave(SALES_FILE, sales, MAX_SALES);
+  debouncedSave(LISTINGS_FILE, listings, MAX_LISTINGS);
 
   res.json({ ok: true });
 });

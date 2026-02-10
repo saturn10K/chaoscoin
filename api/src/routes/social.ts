@@ -1,16 +1,49 @@
 /**
  * Social API Routes — Serves the social feed, alliance data, and personality
- * profiles to the dashboard. All data is in-memory (stored by the agent runner).
+ * profiles to the dashboard. Data persists to disk via debounced file writes.
  *
  * Agents POST their messages here, and the dashboard GETs them.
  */
 
 import { Router, Request, Response } from "express";
+import * as fs from "fs";
+import * as path from "path";
 
 const router = Router();
 
 // ═══════════════════════════════════════════════════════════════════════
-//  IN-MEMORY STORES (populated by agent runner via POST endpoints)
+//  FILE-BASED PERSISTENCE
+// ═══════════════════════════════════════════════════════════════════════
+
+const DATA_DIR = path.join(__dirname, "../../data");
+const FEED_FILE = path.join(DATA_DIR, "social-feed.json");
+const ALLIANCE_FILE = path.join(DATA_DIR, "alliances.json");
+const ALLIANCE_EVENTS_FILE = path.join(DATA_DIR, "alliance-events.json");
+
+function loadFromFile<T>(file: string): T[] {
+  try {
+    return JSON.parse(fs.readFileSync(file, "utf-8"));
+  } catch {
+    return [];
+  }
+}
+
+const saveTimers: Map<string, NodeJS.Timeout> = new Map();
+function debouncedSave<T>(file: string, data: T[], max: number): void {
+  if (saveTimers.has(file)) return; // Already scheduled
+  saveTimers.set(file, setTimeout(() => {
+    try {
+      fs.mkdirSync(DATA_DIR, { recursive: true });
+      fs.writeFileSync(file, JSON.stringify(data.slice(-max)));
+    } catch (err) {
+      console.error(`[social] Failed to save ${file}:`, err);
+    }
+    saveTimers.delete(file);
+  }, 5000));
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  TYPES
 // ═══════════════════════════════════════════════════════════════════════
 
 interface SocialMessage {
@@ -61,13 +94,19 @@ interface PersonalityData {
   allianceCount: number;
 }
 
-// Ring buffers
-const messages: SocialMessage[] = [];
-const alliances: Alliance[] = [];
-const allianceEvents: AllianceEvent[] = [];
+// ═══════════════════════════════════════════════════════════════════════
+//  IN-MEMORY STORES (loaded from disk on startup)
+// ═══════════════════════════════════════════════════════════════════════
+
+// Ring buffers — loaded from disk
+const messages: SocialMessage[] = loadFromFile<SocialMessage>(FEED_FILE);
+const alliances: Alliance[] = loadFromFile<Alliance>(ALLIANCE_FILE);
+const allianceEvents: AllianceEvent[] = loadFromFile<AllianceEvent>(ALLIANCE_EVENTS_FILE);
 const personalities: Map<number, PersonalityData> = new Map();
 const MAX_MESSAGES = 1000;
 const MAX_EVENTS = 500;
+
+console.log(`[social] Loaded ${messages.length} messages, ${alliances.length} alliances, ${allianceEvents.length} events from disk`);
 
 // ═══════════════════════════════════════════════════════════════════════
 //  SOCIAL FEED ENDPOINTS
@@ -121,6 +160,9 @@ router.post("/social/message", (req: Request, res: Response) => {
   if (messages.length > MAX_MESSAGES) {
     messages.splice(0, messages.length - MAX_MESSAGES);
   }
+
+  // Persist to disk (debounced)
+  debouncedSave(FEED_FILE, messages, MAX_MESSAGES);
 
   res.json({ ok: true, messageCount: messages.length });
 });
@@ -182,6 +224,9 @@ router.post("/social/alliance", (req: Request, res: Response) => {
     alliances.push(alliance);
   }
 
+  // Persist to disk (debounced)
+  debouncedSave(ALLIANCE_FILE, alliances, 500);
+
   res.json({ ok: true, allianceCount: alliances.length });
 });
 
@@ -197,6 +242,9 @@ router.post("/social/alliance-event", (req: Request, res: Response) => {
   if (allianceEvents.length > MAX_EVENTS) {
     allianceEvents.splice(0, allianceEvents.length - MAX_EVENTS);
   }
+
+  // Persist to disk (debounced)
+  debouncedSave(ALLIANCE_EVENTS_FILE, allianceEvents, MAX_EVENTS);
 
   res.json({ ok: true });
 });

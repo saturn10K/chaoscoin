@@ -1,5 +1,5 @@
 /**
- * Agent Runner — Spins up 5 autonomous mining agents with different strategies.
+ * Agent Runner — Spins up 10 autonomous mining agents with different strategies.
  *
  * Persists wallets to .wallets.json so agents survive restarts.
  * On restart, reconnects to existing on-chain agents instead of creating new ones.
@@ -47,11 +47,18 @@ const ADDRESSES: ContractAddresses = {
 };
 
 const AGENT_CONFIGS: { strategy: Strategy; zone: number; label: string }[] = [
+  // Original 5
   { strategy: "balanced", zone: 3, label: "Balanced (Nebula Depths)" },
   { strategy: "aggressive", zone: 0, label: "Aggressive (Solar Flats)" },
   { strategy: "defensive", zone: 1, label: "Defensive (Graviton Fields)" },
   { strategy: "opportunist", zone: 6, label: "Opportunist (Pocket Rim)" },
   { strategy: "nomad", zone: 7, label: "Nomad (Singer Void)" },
+  // 5 new agents — fill remaining zones + create rivalries
+  { strategy: "aggressive", zone: 2, label: "Aggressive (Dark Forest)" },
+  { strategy: "defensive", zone: 4, label: "Defensive (Kuiper Expanse)" },
+  { strategy: "balanced", zone: 5, label: "Balanced (Trisolaran Reach)" },
+  { strategy: "opportunist", zone: 3, label: "Opportunist (Nebula Depths)" },  // zone rival for Agent #1
+  { strategy: "nomad", zone: 0, label: "Nomad (Solar Flats)" },               // zone rival for Agent #2
 ];
 
 const REGISTRY_ABI = [
@@ -120,15 +127,32 @@ async function main() {
   // ── Load or create wallets ──
   let savedWallets = loadWallets();
   let agentWallets: ethers.Wallet[] = [];
-  let isReconnect = false;
 
-  if (savedWallets && savedWallets.length === AGENT_CONFIGS.length) {
-    console.log("🔄 Found saved wallets — reconnecting to existing agents\n");
-    isReconnect = true;
-    for (const sw of savedWallets) {
+  if (savedWallets && savedWallets.length > 0) {
+    // Reconnect existing wallets
+    const existingCount = Math.min(savedWallets.length, AGENT_CONFIGS.length);
+    console.log(`🔄 Found ${savedWallets.length} saved wallets — reconnecting\n`);
+    for (let i = 0; i < existingCount; i++) {
+      const sw = savedWallets[i];
       const wallet = new ethers.Wallet(sw.privateKey, provider);
       agentWallets.push(wallet);
-      console.log(`Agent ${sw.index + 1} (${sw.label}): ${wallet.address}${sw.agentId ? ` → Agent #${sw.agentId}` : ""}`);
+      console.log(`Agent ${i + 1} (${sw.label}): ${wallet.address}${sw.agentId ? ` → Agent #${sw.agentId}` : ""}`);
+    }
+    // Create wallets for any new agents beyond the saved count
+    if (existingCount < AGENT_CONFIGS.length) {
+      console.log(`\n🆕 Creating ${AGENT_CONFIGS.length - existingCount} new agent wallets...\n`);
+      for (let i = existingCount; i < AGENT_CONFIGS.length; i++) {
+        const wallet = new ethers.Wallet(ethers.Wallet.createRandom().privateKey, provider);
+        agentWallets.push(wallet);
+        savedWallets.push({
+          index: i,
+          label: AGENT_CONFIGS[i].label,
+          address: wallet.address,
+          privateKey: wallet.privateKey,
+        });
+        console.log(`Agent ${i + 1} (${AGENT_CONFIGS[i].label}): ${wallet.address} [NEW]`);
+      }
+      saveWallets(savedWallets);
     }
   } else {
     console.log("🆕 No saved wallets found — creating new agents\n");
@@ -225,7 +249,7 @@ async function main() {
 
   // ── LLM Setup ──
   // If ANTHROPIC_API_KEY is set, use Claude Haiku for dynamic social posts + game decisions.
-  // All 5 agents share the same LLM client but each has its own personality/strategy
+  // All 10 agents share the same LLM client but each has its own personality/strategy
   // encoded in the system prompt, so they behave as distinct individuals.
   const ANTHROPIC_KEY = process.env.ANTHROPIC_API_KEY;
   let claudeGenerate: GenerateMessageFn | null = null;
