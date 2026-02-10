@@ -189,14 +189,20 @@ async function main() {
       if (savedWallets) {
         savedWallets[i].agentId = Number(existingId);
       }
-      // Check if needs more gas (top up if below 1 MON)
+      // Check if needs more gas (top up if below 0.1 MON)
       const bal = await provider.getBalance(wallet.address);
-      if (bal < ethers.parseEther("1.0")) {
-        console.log(`  [Agent ${i + 1}] Low gas — topping up...`);
-        await sleep(2000);
-        const fundTx = await registrar.sendTransaction({ to: wallet.address, value: gasAmount });
-        await fundTx.wait();
-        console.log(`  [Agent ${i + 1}] ✓ Topped up`);
+      if (bal < ethers.parseEther("0.1")) {
+        console.log(`  [Agent ${i + 1}] Low gas (${ethers.formatEther(bal)} MON) — topping up...`);
+        try {
+          await sleep(2000);
+          const fundTx = await registrar.sendTransaction({ to: wallet.address, value: gasAmount });
+          await fundTx.wait();
+          console.log(`  [Agent ${i + 1}] ✓ Topped up`);
+        } catch (e: unknown) {
+          console.log(`  [Agent ${i + 1}] ⚠ Top-up failed (registrar may be low on gas), continuing...`);
+        }
+      } else {
+        console.log(`  [Agent ${i + 1}] Gas OK (${ethers.formatEther(bal)} MON)`);
       }
       continue;
     }

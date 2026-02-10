@@ -103,6 +103,19 @@ export interface ChainClientConfig {
  * Direct ethers.js contract calls for agents.
  * Agents use this to interact with contracts directly using their own EOA.
  */
+/**
+ * A Wallet subclass that always fetches the nonce from the network
+ * before sending. This prevents stale-nonce errors when a prior tx
+ * fails (e.g. insufficient gas) but ethers' internal counter already
+ * incremented.
+ */
+class FreshNonceWallet extends ethers.Wallet {
+  async getNonce(blockTag?: string): Promise<number> {
+    // Always query the pending nonce from the RPC — never use a cached value
+    return super.getNonce("pending");
+  }
+}
+
 export class ChainClient {
   public provider: ethers.JsonRpcProvider;
   public wallet: ethers.Wallet;
@@ -127,7 +140,7 @@ export class ChainClient {
       batchMaxCount: 1,
       pollingInterval: 30_000,
     });
-    this.wallet = new ethers.Wallet(config.privateKey, this.provider);
+    this.wallet = new FreshNonceWallet(config.privateKey, this.provider);
     this.addresses = config.addresses;
 
     this.agentRegistry = new ethers.Contract(
