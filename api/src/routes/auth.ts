@@ -11,6 +11,13 @@ import { RegisterRequest } from "../types";
 
 const router = Router();
 
+function getIdentity(req: Request): string {
+  if (req.moltbookAgent) return req.moltbookAgent.id;
+  const addr = req.body?.operatorAddress;
+  if (addr && ethers.isAddress(addr)) return `wallet:${addr.toLowerCase()}`;
+  return `anon:${Date.now()}`;
+}
+
 // POST /api/register — Register a new agent
 router.post(
   "/register",
@@ -19,7 +26,7 @@ router.post(
   async (req: Request, res: Response): Promise<void> => {
     try {
       const { zone, operatorAddress } = req.body as RegisterRequest;
-      const moltbookAgent = req.moltbookAgent!;
+      const identity = getIdentity(req);
 
       // Validate inputs
       if (zone === undefined || zone < 0 || zone >= 8) {
@@ -35,11 +42,11 @@ router.post(
       }
 
       // Check if already registered
-      const existingId = await getAgentByMoltbookId(moltbookAgent.id);
+      const existingId = await getAgentByMoltbookId(identity);
       if (existingId > 0) {
         const existing = await getAgent(existingId);
         res.status(409).json({
-          error: "Moltbook agent already registered",
+          error: "Agent already registered",
           agentId: existingId,
           agent: existing,
         });
@@ -49,7 +56,7 @@ router.post(
       // Register onchain
       const { agentId, txHash } = await registerAgent(
         operatorAddress,
-        moltbookAgent.id,
+        identity,
         zone
       );
 
@@ -80,8 +87,8 @@ router.post(
   moltbookAuth,
   async (req: Request, res: Response): Promise<void> => {
     try {
-      const moltbookAgent = req.moltbookAgent!;
-      const agentId = await getAgentByMoltbookId(moltbookAgent.id);
+      const identity = getIdentity(req);
+      const agentId = await getAgentByMoltbookId(identity);
 
       if (agentId === 0) {
         res.status(404).json({ error: "Agent not registered" });

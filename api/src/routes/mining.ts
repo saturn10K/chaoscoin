@@ -8,6 +8,14 @@ import {
 
 const router = Router();
 
+function getIdentity(req: Request): string {
+  if (req.moltbookAgent) return req.moltbookAgent.id;
+  // For mining routes, agentId can be passed in query/body
+  const agentIdParam = req.query?.agentId || req.body?.agentId;
+  if (agentIdParam) return `agent:${agentIdParam}`;
+  return "";
+}
+
 // GET /api/mining/status — Current mining status for authenticated agent
 router.get(
   "/mining/status",
@@ -15,8 +23,10 @@ router.get(
   moltbookAuth,
   async (req: Request, res: Response): Promise<void> => {
     try {
-      const moltbookAgent = req.moltbookAgent!;
-      const agentId = await getAgentByMoltbookId(moltbookAgent.id);
+      const identity = getIdentity(req);
+      const agentId = identity.startsWith("agent:")
+        ? parseInt(identity.split(":")[1])
+        : await getAgentByMoltbookId(identity);
 
       if (agentId === 0) {
         res.status(404).json({ error: "Agent not registered" });
@@ -39,8 +49,10 @@ router.post(
   moltbookAuth,
   async (req: Request, res: Response): Promise<void> => {
     try {
-      const moltbookAgent = req.moltbookAgent!;
-      const agentId = await getAgentByMoltbookId(moltbookAgent.id);
+      const identity = getIdentity(req);
+      const agentId = identity.startsWith("agent:")
+        ? parseInt(identity.split(":")[1])
+        : await getAgentByMoltbookId(identity);
 
       if (agentId === 0) {
         res.status(404).json({ error: "Agent not registered" });

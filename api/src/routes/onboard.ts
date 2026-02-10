@@ -22,6 +22,18 @@ import { authLimiter } from "../middleware/rateLimiter";
 import { registerAgent, getAgentByMoltbookId, getAgent } from "../services/contractService";
 import { config } from "../config";
 
+// When Moltbook is unavailable, derive a stable ID from the request.
+// For Step 1 (no address yet) we use a random UUID; for Step 2 we use the operatorAddress.
+function getFallbackId(req: Request): string {
+  // If a Moltbook token was provided and validated, use that
+  if (req.moltbookAgent) return req.moltbookAgent.id;
+  // Otherwise use operatorAddress (Step 2) or generate from body
+  const addr = req.body?.operatorAddress;
+  if (addr && ethers.isAddress(addr)) return `wallet:${addr.toLowerCase()}`;
+  // Step 1: we don't need a duplicate-check ID (wallet doesn't exist yet)
+  return `anon:${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
 const router = Router();
 
 const STRATEGIES = ["balanced", "aggressive", "defensive", "opportunist", "nomad"] as const;
@@ -54,7 +66,7 @@ router.post(
   moltbookAuth,
   async (req: Request, res: Response): Promise<void> => {
     try {
-      const moltbookAgent = req.moltbookAgent!;
+      const agentIdentity = getFallbackId(req);
       const requestedStrategy = req.body?.strategy || "balanced";
       const requestedZone = req.body?.zone;
 
@@ -67,17 +79,19 @@ router.post(
           ? requestedZone
           : STRATEGY_ZONES[strategy] ?? 3;
 
-      // Check if already registered
-      const existingId = await getAgentByMoltbookId(moltbookAgent.id);
-      if (existingId > 0) {
-        const existing = await getAgent(existingId);
-        res.status(409).json({
-          error: "Already registered",
-          message: `Your Moltbook agent is already registered as Agent #${existingId}. You cannot onboard twice.`,
-          agentId: existingId,
-          agent: existing,
-        });
-        return;
+      // Check if already registered (only meaningful with a stable identity)
+      if (req.moltbookAgent) {
+        const existingId = await getAgentByMoltbookId(agentIdentity);
+        if (existingId > 0) {
+          const existing = await getAgent(existingId);
+          res.status(409).json({
+            error: "Already registered",
+            message: `Your agent is already registered as Agent #${existingId}. You cannot onboard twice.`,
+            agentId: existingId,
+            agent: existing,
+          });
+          return;
+        }
       }
 
       // Generate wallet — private key returned ONCE, never stored server-side
@@ -150,8 +164,8 @@ router.post(
   moltbookAuth,
   async (req: Request, res: Response): Promise<void> => {
     try {
-      const moltbookAgent = req.moltbookAgent!;
       const { operatorAddress, zone } = req.body;
+      const agentIdentity = getFallbackId(req);
 
       // Validate
       if (!operatorAddress || !ethers.isAddress(operatorAddress)) {
@@ -163,7 +177,7 @@ router.post(
         zone !== undefined && zone >= 0 && zone < 8 ? zone : 3;
 
       // Check if already registered
-      const existingId = await getAgentByMoltbookId(moltbookAgent.id);
+      const existingId = await getAgentByMoltbookId(agentIdentity);
       if (existingId > 0) {
         const existing = await getAgent(existingId);
         res.status(409).json({
@@ -194,7 +208,7 @@ router.post(
       // Register on-chain (registrar pays for the register() tx only)
       const { agentId, txHash } = await registerAgent(
         operatorAddress,
-        moltbookAgent.id,
+        agentIdentity,
         targetZone
       );
 

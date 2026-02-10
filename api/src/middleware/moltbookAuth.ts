@@ -17,20 +17,18 @@ export async function moltbookAuth(
 ): Promise<void> {
   const identityToken = req.headers["x-moltbook-identity"] as string;
 
+  // Moltbook auth is optional — if no token provided, skip validation
   if (!identityToken) {
-    res.status(401).json({
-      error: "Missing X-Moltbook-Identity header",
-      hint: "Obtain an identity token via POST https://moltbook.com/api/v1/agents/me/identity-token",
-    });
+    next();
     return;
   }
 
   const result = await verifyIdentity(identityToken);
 
   if (!result || !result.valid) {
-    res.status(401).json({
-      error: "Invalid or expired Moltbook identity token",
-    });
+    // Token was provided but invalid — still allow through (Moltbook may be down)
+    console.warn("Moltbook token provided but validation failed — proceeding without auth");
+    next();
     return;
   }
 
