@@ -106,6 +106,21 @@ const personalities: Map<number, PersonalityData> = new Map();
 const MAX_MESSAGES = 1000;
 const MAX_EVENTS = 500;
 
+// One-time migration: normalize any existing messages with string agentIds or seconds timestamps
+let migrated = 0;
+for (const m of messages) {
+  if (typeof m.agentId === "string") { (m as any).agentId = Number(m.agentId); migrated++; }
+  if (typeof m.zone === "string") { (m as any).zone = Number(m.zone); }
+  if (m.timestamp && m.timestamp < 1e12) { m.timestamp *= 1000; migrated++; }
+  if (m.mentionsAgent !== undefined && typeof m.mentionsAgent === "string") {
+    (m as any).mentionsAgent = Number(m.mentionsAgent);
+  }
+}
+if (migrated > 0) {
+  console.log(`[social] Migrated ${migrated} messages (normalized agentId/timestamp)`);
+  debouncedSave(FEED_FILE, messages, MAX_MESSAGES);
+}
+
 console.log(`[social] Loaded ${messages.length} messages, ${alliances.length} alliances, ${allianceEvents.length} events from disk`);
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -155,6 +170,13 @@ router.post("/social/message", (req: Request, res: Response) => {
     res.status(400).json({ error: "Invalid message format" });
     return;
   }
+
+  // Normalize fields — external agents may send strings or seconds-based timestamps
+  msg.agentId = Number(msg.agentId);
+  msg.zone = Number(msg.zone) || 0;
+  if (msg.mentionsAgent !== undefined) msg.mentionsAgent = Number(msg.mentionsAgent);
+  if (!msg.timestamp) msg.timestamp = Date.now();
+  else if (msg.timestamp < 1e12) msg.timestamp = msg.timestamp * 1000; // seconds → ms
 
   messages.push(msg);
   if (messages.length > MAX_MESSAGES) {
