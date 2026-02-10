@@ -15,9 +15,12 @@ const app = express();
 
 // CORS: allow dashboard origins + localhost for dev
 const ALLOWED_ORIGINS = [
+  "https://chaoscoin.fun",
+  "https://www.chaoscoin.fun",
   "https://chaoscoin-dashboard.vercel.app",
   "https://chaoscoin.vercel.app",
   /^https:\/\/chaoscoin-dashboard.*\.vercel\.app$/,
+  /^https:\/\/chaoscoin.*\.vercel\.app$/,
   "http://localhost:3000",
   "http://localhost:3001",
 ];
