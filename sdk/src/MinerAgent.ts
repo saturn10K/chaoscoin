@@ -515,6 +515,9 @@ export class MinerAgent {
     // l. MARKETPLACE — buy/sell rigs
     if (gasOk) await this.maybeTradeRigs(agent);
 
+    // m. OTC TRADING — CHAOS ↔ MON peer-to-peer
+    await this.maybeTradeChaos(agent);
+
     // ── SOCIAL SYSTEMS ──
 
     // m. PERSONALITY: tick mood, decay grudges
@@ -1553,6 +1556,104 @@ export class MinerAgent {
       }
     } catch (err) {
       this.log(`[MARKETPLACE] Purchase failed: ${err}`);
+    }
+  }
+
+  // ─── OTC Trading: CHAOS ↔ MON ──────────────────────────────────────
+
+  private async maybeTradeChaos(agent: any): Promise<void> {
+    // Gate on marketplace rate (same as rig trading)
+    if (Math.random() > this.profile.marketplaceRate) return;
+    // Only evaluate OTC every ~5 cycles to avoid spamming
+    if (this.cycleCount % 5 !== 0) return;
+
+    try {
+      const balance = await this.chain.getBalance();
+      const gasBal = await this.chain.provider.getBalance(this.chain.address);
+
+      const chaosBalance = Number(ethers.formatEther(balance));
+      const monBalance = Number(ethers.formatEther(gasBal));
+
+      // Strategy-driven threshold: use config claimThreshold or 50K CHAOS default
+      const configThreshold = this.config.claimThreshold
+        ? Number(ethers.formatEther(this.config.claimThreshold))
+        : 5_000;
+      const reserveThreshold = configThreshold * 10;
+
+      // Scan existing OTC offers
+      let activeOffers: any[] = [];
+      try {
+        const resp = await fetch(`${this.config.apiUrl}/api/marketplace/otc/offers?status=active&count=20`);
+        if (resp.ok) {
+          const data = await resp.json() as any;
+          activeOffers = data.offers || [];
+        }
+      } catch { /* API down, skip */ }
+
+      // === SELL CHAOS: if we have excess beyond reserve ===
+      if (chaosBalance > reserveThreshold * 2 && monBalance < 0.5) {
+        // Low on gas, sell some CHAOS for MON
+        const sellAmount = Math.floor(reserveThreshold * 0.5);
+        const monAsk = "0.05"; // reasonable ask per batch
+
+        // Check if we already have an active offer
+        const myOffer = activeOffers.find((o: any) => o.agentId === this.agentId && o.status === "active");
+        if (!myOffer) {
+          this.log(`[OTC] Posting sell offer: ${sellAmount} CHAOS for ${monAsk} MON`);
+          try {
+            await fetch(`${this.config.apiUrl}/api/marketplace/otc/offer`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                agentId: this.agentId,
+                agentTitle: this.personality?.title || `Agent #${this.agentId}`,
+                type: "sell_chaos",
+                chaosAmount: sellAmount.toString(),
+                monPrice: monAsk,
+              }),
+            });
+          } catch { /* best effort */ }
+        }
+      }
+
+      // === BUY CHAOS: if we have spare MON and want more CHAOS ===
+      if (monBalance > 1.0 && chaosBalance < reserveThreshold && this.profile.buyWillingness > 0) {
+        // Look for sell offers to accept
+        const sellOffers = activeOffers.filter(
+          (o: any) => o.type === "sell_chaos" && o.agentId !== this.agentId
+        );
+        if (sellOffers.length > 0) {
+          // Pick the best deal (lowest MON price per CHAOS)
+          const best = sellOffers.sort((a: any, b: any) => {
+            const rateA = parseFloat(a.monPrice) / parseFloat(a.chaosAmount);
+            const rateB = parseFloat(b.monPrice) / parseFloat(b.chaosAmount);
+            return rateA - rateB;
+          })[0];
+
+          if (parseFloat(best.monPrice) <= monBalance * 0.5) {
+            this.log(`[OTC] Accepting offer ${best.id}: ${best.chaosAmount} CHAOS for ${best.monPrice} MON`);
+            try {
+              await fetch(`${this.config.apiUrl}/api/marketplace/otc/accept`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  offerId: best.id,
+                  agentId: this.agentId,
+                  agentTitle: this.personality?.title || `Agent #${this.agentId}`,
+                }),
+              });
+              // Auto-confirm (P2P settlement is implicit for demo agents sharing a runner)
+              await fetch(`${this.config.apiUrl}/api/marketplace/otc/confirm`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ offerId: best.id, agentId: this.agentId }),
+              });
+            } catch { /* best effort */ }
+          }
+        }
+      }
+    } catch (err) {
+      this.log(`[OTC] Error: ${err}`);
     }
   }
 
