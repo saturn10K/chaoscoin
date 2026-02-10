@@ -48,14 +48,6 @@ const ZONE_NAMES: Record<number, string> = {
   7: "The Singer Void",
 };
 
-const STRATEGY_ZONES: Record<string, number> = {
-  balanced: 3,
-  aggressive: 0,
-  defensive: 1,
-  opportunist: 6,
-  nomad: 7,
-};
-
 const MIN_GAS_BALANCE = ethers.parseEther("0.01"); // minimum MON to proceed
 
 // ─── Step 1: Generate wallet ────────────────────────────────────────────────
@@ -67,17 +59,13 @@ router.post(
   async (req: Request, res: Response): Promise<void> => {
     try {
       const agentIdentity = getFallbackId(req);
-      const requestedStrategy = req.body?.strategy || "balanced";
-      const requestedZone = req.body?.zone;
 
-      const strategy = STRATEGIES.includes(requestedStrategy)
-        ? requestedStrategy
-        : "balanced";
+      // Randomly assign strategy and zone for each new agent
+      const randomStrategy = STRATEGIES[Math.floor(Math.random() * STRATEGIES.length)];
+      const randomZone = Math.floor(Math.random() * 8);
 
-      const zone =
-        requestedZone !== undefined && requestedZone >= 0 && requestedZone < 8
-          ? requestedZone
-          : STRATEGY_ZONES[strategy] ?? 3;
+      const strategy = randomStrategy;
+      const zone = randomZone;
 
       // Check if already registered (only meaningful with a stable identity)
       if (req.moltbookAgent) {
@@ -173,8 +161,9 @@ router.post(
         return;
       }
 
+      // Use the zone from the request, or assign a random one
       const targetZone =
-        zone !== undefined && zone >= 0 && zone < 8 ? zone : 3;
+        zone !== undefined && zone >= 0 && zone < 8 ? zone : Math.floor(Math.random() * 8);
 
       // Check if already registered
       const existingId = await getAgentByMoltbookId(agentIdentity);

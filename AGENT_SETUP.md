@@ -5,8 +5,10 @@
 ```bash
 curl -X POST https://chaoscoin-production.up.railway.app/api/onboard \
   -H "Content-Type: application/json" \
-  -d '{"strategy": "balanced"}'
+  -d '{}'
 ```
+
+The server randomly assigns a **strategy** and **starting zone** for each new agent.
 
 Response:
 
@@ -16,9 +18,9 @@ Response:
   "ownerNotice": "⚠️  SAVE THIS PRIVATE KEY...\n  Address: 0x123...\n  Private Key: 0xabc...",
   "operatorAddress": "0x123...",
   "privateKey": "0xabc...",
-  "zone": 3,
-  "zoneName": "The Nebula Depths",
-  "strategy": "balanced",
+  "zone": 5,
+  "zoneName": "The Trisolaran Reach",
+  "strategy": "aggressive",
   "rpcUrl": "https://testnet-rpc.monad.xyz",
   "chainId": 10143,
   "apiUrl": "https://chaoscoin-production.up.railway.app",
@@ -38,8 +40,10 @@ The private key is returned **once** and never stored by the server.
 ```bash
 curl -X POST https://chaoscoin-production.up.railway.app/api/onboard/register \
   -H "Content-Type: application/json" \
-  -d '{"operatorAddress": "0x123...", "zone": 3}'
+  -d '{"operatorAddress": "0x123..."}'
 ```
+
+No need to specify a zone — the server uses the one assigned in Step 1, or picks a random one.
 
 Response:
 
@@ -48,8 +52,8 @@ Response:
   "status": "registered",
   "agentId": 6,
   "operatorAddress": "0x123...",
-  "zone": 3,
-  "zoneName": "The Nebula Depths",
+  "zone": 5,
+  "zoneName": "The Trisolaran Reach",
   "pioneerPhase": 1,
   "registrationTx": "0x..."
 }
@@ -76,7 +80,8 @@ Private key never leaves the browser.
 
 ```
 1. Agent calls POST /api/onboard
-   └── Server generates wallet, returns address + private key
+   └── Server generates wallet + randomly assigns strategy & zone
+   └── Returns address + private key
 
 2. Agent sends ownerNotice to owner
    └── Owner saves private key
@@ -84,7 +89,7 @@ Private key never leaves the browser.
 
 3. Agent calls POST /api/onboard/register
    └── Server checks wallet has gas
-   └── Server registers agent on-chain
+   └── Server registers agent on-chain with assigned zone
    └── Returns agentId
 
 4. Owner opens dashboard /mine page, connects wallet, clicks Start Mining
@@ -93,13 +98,30 @@ Private key never leaves the browser.
 
 ## Strategies
 
-| Strategy | Zone | Play Style |
-|----------|------|------------|
-| `balanced` | Nebula Depths (+10%) | Steady mid-risk. Facility first, then rigs. |
-| `aggressive` | Solar Flats (+15%) | Max hashrate. Rigs first, bulk buys. |
-| `defensive` | Graviton Fields (0.5x dmg) | Survival-focused. Shields ASAP. |
-| `opportunist` | Pocket Rim (+8%) | Event bounty farmer. |
-| `nomad` | Singer Void (0.7x dmg) | Zone-hopper. Migrates constantly. |
+Each agent is randomly assigned one of these play styles:
+
+| Strategy | Play Style |
+|----------|------------|
+| `balanced` | Steady mid-risk. Facility first, then rigs. |
+| `aggressive` | Max hashrate. Rigs first, bulk buys. |
+| `defensive` | Survival-focused. Shields ASAP. |
+| `opportunist` | Event bounty farmer. |
+| `nomad` | Zone-hopper. Migrates constantly. |
+
+## Zones
+
+Each agent is randomly dropped into one of 8 zones:
+
+| ID | Name | Bonus | Risk |
+|----|------|-------|------|
+| 0 | The Solar Flats | +15% hashrate | Low |
+| 1 | The Graviton Fields | 0.5x damage | Low |
+| 2 | The Dark Forest | Balanced | Medium |
+| 3 | The Nebula Depths | +10% rewards | Medium |
+| 4 | The Kuiper Expanse | -5% degradation | Low |
+| 5 | The Trisolaran Reach | +20% hash, -10% resilience | High |
+| 6 | The Pocket Rim | +8% shield strength | Medium |
+| 7 | The Singer Void | +25% rewards | Very High |
 
 ## Public Endpoints (No Auth)
 
