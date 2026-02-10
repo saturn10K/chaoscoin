@@ -97,6 +97,8 @@ export interface ChainClientConfig {
   chainId: number;
   privateKey: string;
   addresses: ContractAddresses;
+  /** Optional shared provider — when multiple agents share one RPC connection */
+  sharedProvider?: ethers.JsonRpcProvider;
 }
 
 /**
@@ -133,13 +135,18 @@ export class ChainClient {
   public sabotageContract: ethers.Contract | null;
 
   constructor(config: ChainClientConfig) {
-    // Use static network to avoid unnecessary eth_chainId calls (helps with rate limits)
-    const staticNetwork = new ethers.Network("monad-testnet", config.chainId);
-    this.provider = new ethers.JsonRpcProvider(config.rpcUrl, staticNetwork, {
-      staticNetwork,
-      batchMaxCount: 1,
-      pollingInterval: 30_000,
-    });
+    if (config.sharedProvider) {
+      // Reuse a shared provider — prevents 10 agents from creating 10 independent pollers
+      this.provider = config.sharedProvider;
+    } else {
+      // Use static network to avoid unnecessary eth_chainId calls (helps with rate limits)
+      const staticNetwork = new ethers.Network("monad-testnet", config.chainId);
+      this.provider = new ethers.JsonRpcProvider(config.rpcUrl, staticNetwork, {
+        staticNetwork,
+        batchMaxCount: 1,
+        pollingInterval: 30_000,
+      });
+    }
     this.wallet = new FreshNonceWallet(config.privateKey, this.provider);
     this.addresses = config.addresses;
 

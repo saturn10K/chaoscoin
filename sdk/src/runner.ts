@@ -247,7 +247,11 @@ async function main() {
   provider.destroy();
 
   // ── Phase 2: Start agents with shared social systems ──
-  console.log("\n── Starting mining agents (one at a time, 90s cycle) ──\n");
+  // Create a single shared provider for all agents — prevents 10 independent
+  // pollers from hammering the RPC (Monad testnet limit: 15 req/sec)
+  const sharedProvider = makeProvider();
+
+  console.log("\n── Starting mining agents (one at a time, 180s cycle) ──\n");
 
   // Shared social infrastructure — all agents share these
   const socialFeed = new SocialFeedStore(1000);
@@ -532,6 +536,7 @@ async function main() {
       generateMessage,
       generateStrategy: claudeGenerate || undefined, // Only LLM-driven game decisions with Claude
       allProfiles,
+      sharedProvider, // All agents share one RPC connection (Monad testnet: 15 req/sec limit)
     });
 
     agents.push(agent);

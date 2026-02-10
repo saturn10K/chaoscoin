@@ -71,6 +71,8 @@ export interface MinerAgentConfig {
   generateStrategy?: GenerateMessageFn;
   /** All agent personality profiles (for alliance evaluation) */
   allProfiles?: Map<number, PersonalityProfile>;
+  /** Shared JSON-RPC provider (prevents 10 agents from creating 10 pollers) */
+  sharedProvider?: import("ethers").JsonRpcProvider;
 }
 
 interface StrategyProfile {
@@ -396,6 +398,7 @@ export class MinerAgent {
       chainId: config.chainId,
       privateKey: config.privateKey,
       addresses: config.addresses,
+      sharedProvider: config.sharedProvider,
     });
 
     this.api = new ChaoscoinClient({
@@ -439,7 +442,11 @@ export class MinerAgent {
         this.log(`Cycle error: ${err}`);
       }
 
-      await this.sleep(this.config.interval || 30_000);
+      // Add ±15s jitter to prevent all 10 agents from firing cycles at the same second
+      // after the initial stagger evens out (RPC limit: 15 req/sec)
+      const baseInterval = this.config.interval || 30_000;
+      const jitter = Math.floor(Math.random() * 30_000) - 15_000;
+      await this.sleep(baseInterval + jitter);
     }
   }
 
