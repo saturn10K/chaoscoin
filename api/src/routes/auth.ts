@@ -71,10 +71,7 @@ router.post(
       });
     } catch (err: any) {
       console.error("Registration error:", err);
-      res.status(500).json({
-        error: "Registration failed",
-        detail: err.message,
-      });
+      res.status(500).json({ error: "Registration failed" });
     }
   }
 );
@@ -108,7 +105,7 @@ router.post(
       });
     } catch (err: any) {
       console.error("Heartbeat error:", err);
-      res.status(500).json({ error: "Heartbeat check failed", detail: err.message });
+      res.status(500).json({ error: "Heartbeat check failed" });
     }
   }
 );

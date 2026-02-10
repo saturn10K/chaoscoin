@@ -213,9 +213,12 @@ export class ChainClient {
 
   async approveSpending(
     spender: string,
-    amount: bigint = ethers.MaxUint256
+    amount?: bigint
   ): Promise<ethers.TransactionReceipt> {
-    const tx = await this.chaosToken.approve(spender, amount);
+    // If no specific amount given, approve a bounded amount (100K CHAOS)
+    // instead of MaxUint256 to limit risk from compromised contracts
+    const approvalAmount = amount ?? ethers.parseEther("100000");
+    const tx = await this.chaosToken.approve(spender, approvalAmount);
     return tx.wait();
   }
 

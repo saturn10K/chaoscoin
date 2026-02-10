@@ -25,6 +25,12 @@ import {
   evaluateAllianceAcceptance,
   evaluateBetrayalDesire,
 } from "./AllianceManager";
+import {
+  buildStrategySystemPrompt,
+  buildRigUpgradePrompt,
+  buildShieldDecisionPrompt,
+  buildMigrationPrompt,
+} from "./llm";
 
 export type Strategy = "balanced" | "aggressive" | "defensive" | "opportunist" | "nomad";
 
@@ -55,6 +61,8 @@ export interface MinerAgentConfig {
   allianceManager?: AllianceManager;
   /** LLM message generation function (provided by agent's own AI) */
   generateMessage?: GenerateMessageFn;
+  /** LLM strategy function for game decisions (optional — falls back to hardcoded profiles) */
+  generateStrategy?: GenerateMessageFn;
   /** All agent personality profiles (for alliance evaluation) */
   allProfiles?: Map<number, PersonalityProfile>;
 }
@@ -252,6 +260,7 @@ export class MinerAgent {
   private socialFeed: SocialFeedStore | null;
   private allianceManager: AllianceManager | null;
   private generateMessageFn: GenerateMessageFn | null;
+  private generateStrategyFn: GenerateMessageFn | null;
   private allProfiles: Map<number, PersonalityProfile> | null;
   private lastLeaderboardRank = 0;
 
@@ -261,6 +270,7 @@ export class MinerAgent {
     this.socialFeed = config.socialFeed || null;
     this.allianceManager = config.allianceManager || null;
     this.generateMessageFn = config.generateMessage || null;
+    this.generateStrategyFn = config.generateStrategy || null;
     this.allProfiles = config.allProfiles || null;
 
     this.chain = new ChainClient({
@@ -413,14 +423,19 @@ export class MinerAgent {
       contracts.push(this.config.addresses.zoneManager);
     }
 
+    // Use bounded approvals (100K CHAOS) instead of MaxUint256
+    // to limit exposure if a contract is compromised
+    const approvalThreshold = ethers.parseEther("10000");
+    const approvalAmount = ethers.parseEther("100000");
+
     for (const addr of contracts) {
       const allowance: bigint = await this.chain.chaosToken.allowance(
         this.chain.address,
         addr
       );
-      if (allowance < ethers.MaxUint256 / 2n) {
-        this.log(`Approving spending for ${addr}...`);
-        await this.chain.approveSpending(addr);
+      if (allowance < approvalThreshold) {
+        this.log(`Approving spending for ${addr} (${ethers.formatEther(approvalAmount)} CHAOS)...`);
+        await this.chain.approveSpending(addr, approvalAmount);
       }
     }
   }
@@ -489,24 +504,70 @@ export class MinerAgent {
     // Get current rig state
     const activeRigCount = await this.chain.getActiveRigCount(this.agentId);
     const usedPower = await this.chain.getUsedPower(this.agentId);
+    const currentRigs = await this.chain.getRigs(this.agentId);
 
+    // ── LLM-informed decision (if available) ──
+    if (this.generateStrategyFn && this.personality) {
+      try {
+        const rigSummary = currentRigs.map(r => ({
+          tier: Number(r.tier),
+          active: r.active,
+          durability: r.maxDurability > 0n ? Math.round(Number(r.durability * 100n / r.maxDurability)) : 100,
+        }));
+        const decision = await this.generateStrategyFn(
+          buildStrategySystemPrompt({
+            title: this.personality.title,
+            archetype: this.personality.archetype,
+            emoji: this.personality.emoji,
+            strategy: this.config.strategy || "balanced",
+          }),
+          buildRigUpgradePrompt(balance, rigSummary, maxSlots, maxPower, usedPower, maxTier),
+        );
+        this.log(`[LLM RIG] ${decision}`);
+
+        const tierMatch = decision.match(/BUY\s+T(\d)/i) || decision.match(/T(\d)/i);
+        if (tierMatch) {
+          const chosenTier = Math.min(parseInt(tierMatch[1]), maxTier);
+          if (chosenTier >= 1 && chosenTier <= 4 && balance >= RIG_COSTS[chosenTier]) {
+            this.log(`Purchasing T${chosenTier} rig (LLM choice)...`);
+            try {
+              await this.chain.purchaseRig(this.agentId, chosenTier);
+              this.log(`T${chosenTier} rig purchased`);
+              const rigs = await this.chain.getRigs(this.agentId);
+              const latestRig = rigs[rigs.length - 1];
+              if (latestRig && !latestRig.active) {
+                try {
+                  await this.chain.equipRig(latestRig.rigId);
+                  this.log(`Rig ${latestRig.rigId} equipped`);
+                } catch { this.log("Could not equip — check power budget / slots"); }
+              }
+            } catch (err) { this.log(`Rig purchase failed: ${err}`); }
+            return;
+          }
+        }
+        if (/skip|pass|wait|no/i.test(decision)) return;
+        // Fall through to hardcoded if LLM response is unparseable
+      } catch (err) {
+        this.log(`[LLM RIG] Error, falling back to hardcoded: ${err}`);
+      }
+    }
+
+    // ── Hardcoded fallback ──
     let remaining = balance;
     let rigsBought = 0;
     const maxBuysPerCycle = this.profile.bulkBuyRigs ? 3 : 1;
 
     for (let buy = 0; buy < maxBuysPerCycle; buy++) {
-      // Find highest affordable tier that fits power budget
       let boughtTier = -1;
       for (let tier = maxTier; tier >= 1; tier--) {
         const cost = RIG_COSTS[tier];
         const reserve = cost * BigInt(this.profile.reserveMultiplier);
         if (remaining < reserve) continue;
 
-        // Check if we have power/slot capacity for this rig
         const rigPower = RIG_POWER[tier];
         const currentSlots = activeRigCount + rigsBought;
-        if (currentSlots >= maxSlots) break; // No slots
-        if (usedPower + rigPower * (rigsBought + 1) > maxPower) continue; // No power
+        if (currentSlots >= maxSlots) break;
+        if (usedPower + rigPower * (rigsBought + 1) > maxPower) continue;
 
         this.log(`Purchasing T${tier} rig...`);
         try {
@@ -515,7 +576,6 @@ export class MinerAgent {
           boughtTier = tier;
           remaining -= RIG_COSTS[tier];
 
-          // Try to equip
           const rigs = await this.chain.getRigs(this.agentId);
           const latestRig = rigs[rigs.length - 1];
           if (latestRig && !latestRig.active) {
@@ -523,17 +583,12 @@ export class MinerAgent {
               await this.chain.equipRig(latestRig.rigId);
               this.log(`Rig ${latestRig.rigId} equipped`);
               rigsBought++;
-            } catch {
-              this.log("Could not equip — check power budget / slots");
-            }
+            } catch { this.log("Could not equip — check power budget / slots"); }
           }
-        } catch (err) {
-          this.log(`Rig purchase failed: ${err}`);
-        }
-        break; // Move to next buy iteration (start from highest tier again)
+        } catch (err) { this.log(`Rig purchase failed: ${err}`); }
+        break;
       }
-
-      if (boughtTier === -1) break; // Nothing affordable
+      if (boughtTier === -1) break;
     }
   }
 
@@ -568,8 +623,6 @@ export class MinerAgent {
   // ─── Shield Management ─────────────────────────────────────────────
 
   private async maybeBuyShield(): Promise<void> {
-    if (this.profile.shieldPriority === 0) return;
-
     // Shields require genesis phase >= 2
     const phase = Number(await this.chain.agentRegistry.getGenesisPhase());
     if (phase < 2) return;
@@ -580,31 +633,61 @@ export class MinerAgent {
     const charges = Number(shield.charges);
     const isActive = shield.active;
 
-    // Determine if we need a shield
+    // Ensure existing shield is activated first
+    if (currentTier > 0 && charges > 0 && !isActive) {
+      try {
+        await this.chain.activateShield(this.agentId);
+        this.log("Shield activated");
+      } catch { /* May already be active */ }
+    }
+
+    // ── LLM-informed decision (if available) ──
+    if (this.generateStrategyFn && this.personality) {
+      try {
+        const decision = await this.generateStrategyFn(
+          buildStrategySystemPrompt({
+            title: this.personality.title,
+            archetype: this.personality.archetype,
+            emoji: this.personality.emoji,
+            strategy: this.config.strategy || "balanced",
+          }),
+          buildShieldDecisionPrompt(balance, { tier: currentTier, charges, active: isActive }, 0),
+        );
+        this.log(`[LLM SHIELD] ${decision}`);
+
+        const tierMatch = decision.match(/BUY\s+T(\d)/i) || decision.match(/T(\d)/i);
+        if (tierMatch) {
+          const chosenTier = Math.min(parseInt(tierMatch[1]), 2);
+          if (chosenTier >= 1 && balance >= SHIELD_COSTS[chosenTier - 1]) {
+            this.log(`Purchasing T${chosenTier} shield (LLM choice)...`);
+            try {
+              await this.chain.purchaseShield(this.agentId, chosenTier);
+              this.log(`T${chosenTier} shield purchased`);
+            } catch (err) { this.log(`Shield purchase failed: ${err}`); }
+            return;
+          }
+        }
+        if (/skip|pass|wait|no/i.test(decision)) return;
+      } catch (err) {
+        this.log(`[LLM SHIELD] Error, falling back to hardcoded: ${err}`);
+      }
+    }
+
+    // ── Hardcoded fallback ──
+    if (this.profile.shieldPriority === 0) return;
+
     const needsShield =
       currentTier === 0 ||
       charges === 0 ||
       (this.profile.shieldPriority === 2 && currentTier < this.profile.targetShieldTier);
 
-    if (!needsShield) {
-      // Ensure existing shield is activated
-      if (currentTier > 0 && charges > 0 && !isActive) {
-        try {
-          await this.chain.activateShield(this.agentId);
-          this.log("Shield activated");
-        } catch {
-          // May already be active
-        }
-      }
-      return;
-    }
+    if (!needsShield) return;
 
-    // Try to buy target tier, fall back to lower
     const maxTier = Math.min(this.profile.targetShieldTier, 2);
     for (let tier = maxTier; tier >= 1; tier--) {
       const cost = SHIELD_COSTS[tier - 1];
       const reserve = this.profile.shieldPriority === 2
-        ? cost // ASAP: no reserve buffer
+        ? cost
         : cost * BigInt(this.profile.reserveMultiplier);
 
       if (balance >= reserve) {
@@ -612,9 +695,7 @@ export class MinerAgent {
         try {
           await this.chain.purchaseShield(this.agentId, tier);
           this.log(`T${tier} shield purchased`);
-        } catch (err) {
-          this.log(`Shield purchase failed: ${err}`);
-        }
+        } catch (err) { this.log(`Shield purchase failed: ${err}`); }
         return;
       }
     }
@@ -715,27 +796,72 @@ export class MinerAgent {
     if (!this.chain.zoneManager) return;
 
     const balance = await this.chain.getBalance();
-    // Need migration cost + reserve
     if (balance < MIGRATION_COST * BigInt(this.profile.reserveMultiplier)) return;
 
     const currentZone = Number(agent.zone);
 
-    // Check current zone's conditions
-    const currentModifier = await this.chain.getZoneMiningModifier(currentZone);
-    const currentAgentCount = await this.chain.getZoneAgentCount(currentZone);
+    const ZONE_NAMES = [
+      "The Solar Flats", "The Graviton Fields", "The Dark Forest",
+      "The Nebula Depths", "The Kuiper Expanse", "The Trisolaran Reach",
+      "The Pocket Rim", "The Singer Void",
+    ];
 
-    // Evaluate each preferred migration target
+    // Gather all zone data for LLM context
+    const zoneData: { zone: number; name: string; modifier: number; agentCount: number }[] = [];
+    for (let z = 0; z < 8; z++) {
+      try {
+        const modifier = await this.chain.getZoneMiningModifier(z);
+        const agentCount = await this.chain.getZoneAgentCount(z);
+        zoneData.push({ zone: z, name: ZONE_NAMES[z], modifier, agentCount });
+      } catch {
+        zoneData.push({ zone: z, name: ZONE_NAMES[z], modifier: 0, agentCount: 0 });
+      }
+    }
+
+    // ── LLM-informed decision (if available) ──
+    if (this.generateStrategyFn && this.personality) {
+      try {
+        const decision = await this.generateStrategyFn(
+          buildStrategySystemPrompt({
+            title: this.personality.title,
+            archetype: this.personality.archetype,
+            emoji: this.personality.emoji,
+            strategy: this.config.strategy || "balanced",
+          }),
+          buildMigrationPrompt(currentZone, zoneData),
+        );
+        this.log(`[LLM MIGRATE] ${decision}`);
+
+        const migrateMatch = decision.match(/MIGRATE\s+(\d)/i);
+        if (migrateMatch) {
+          const targetZone = parseInt(migrateMatch[1]);
+          if (targetZone >= 0 && targetZone <= 7 && targetZone !== currentZone) {
+            this.log(`Migrating from zone ${currentZone} to zone ${targetZone} (LLM choice)...`);
+            try {
+              await this.chain.migrateZone(this.agentId, targetZone);
+              this.log(`Migrated to zone ${targetZone}`);
+            } catch (err) { this.log(`Migration failed: ${err}`); }
+            return;
+          }
+        }
+        if (/stay|skip|no/i.test(decision)) return;
+      } catch (err) {
+        this.log(`[LLM MIGRATE] Error, falling back to hardcoded: ${err}`);
+      }
+    }
+
+    // ── Hardcoded fallback ──
+    const currentData = zoneData.find(z => z.zone === currentZone);
+    const currentScore = (currentData?.modifier || 0) - Math.floor((currentData?.agentCount || 0) / 10);
+
     for (const targetZone of this.profile.migrationTargets) {
       if (targetZone === currentZone) continue;
 
-      const targetModifier = await this.chain.getZoneMiningModifier(targetZone);
-      const targetAgentCount = await this.chain.getZoneAgentCount(targetZone);
+      const target = zoneData.find(z => z.zone === targetZone);
+      if (!target) continue;
 
-      // Score: higher modifier is better, fewer agents is better (less competition)
-      const currentScore = currentModifier - Math.floor(currentAgentCount / 10);
-      const targetScore = targetModifier - Math.floor(targetAgentCount / 10);
+      const targetScore = target.modifier - Math.floor(target.agentCount / 10);
 
-      // Migrate if target zone is significantly better (200 bps improvement)
       if (targetScore > currentScore + 200) {
         this.log(
           `Migrating from zone ${currentZone} to zone ${targetZone} ` +
@@ -744,10 +870,8 @@ export class MinerAgent {
         try {
           await this.chain.migrateZone(this.agentId, targetZone);
           this.log(`Migrated to zone ${targetZone}`);
-          return; // One migration per evaluation
-        } catch (err) {
-          this.log(`Migration failed: ${err}`);
-        }
+          return;
+        } catch (err) { this.log(`Migration failed: ${err}`); }
       }
     }
   }

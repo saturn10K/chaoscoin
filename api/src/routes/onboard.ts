@@ -139,7 +139,7 @@ router.post(
       });
     } catch (err: any) {
       console.error("Onboard error:", err);
-      res.status(500).json({ error: "Onboarding failed", detail: err.message });
+      res.status(500).json({ error: "Onboarding failed" });
     }
   }
 );
@@ -216,7 +216,7 @@ router.post(
       });
     } catch (err: any) {
       console.error("Register error:", err);
-      res.status(500).json({ error: "Registration failed", detail: err.message });
+      res.status(500).json({ error: "Registration failed" });
     }
   }
 );

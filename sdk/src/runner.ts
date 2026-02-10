@@ -13,12 +13,13 @@ import * as path from "path";
 import * as dotenv from "dotenv";
 import { MinerAgent, Strategy } from "./MinerAgent";
 import { ContractAddresses } from "./ChainClient";
-import { SocialFeedStore } from "./SocialFeed";
+import { SocialFeedStore, GenerateMessageFn } from "./SocialFeed";
 import { AllianceManager } from "./AllianceManager";
 import { PersonalityProfile, generatePersonality } from "./Personality";
+import { createClaudeGenerator } from "./llm";
 
 // ── Load .env from sdk root ─────────────────────────────────────────────────
-dotenv.config({ path: path.join(__dirname, "..", ".env") });
+dotenv.config({ path: path.join(__dirname, "..", ".env"), override: true });
 
 // ── Config ──────────────────────────────────────────────────────────────────
 
@@ -149,7 +150,7 @@ async function main() {
 
   // ── Phase 1: Fund + Register (skip if already registered) ──
   console.log("\n── Funding & Registering ──");
-  const gasAmount = ethers.parseEther("0.5");
+  const gasAmount = ethers.parseEther("2.0");
 
   for (let i = 0; i < AGENT_CONFIGS.length; i++) {
     const cfg = AGENT_CONFIGS[i];
@@ -164,9 +165,9 @@ async function main() {
       if (savedWallets) {
         savedWallets[i].agentId = Number(existingId);
       }
-      // Check if needs more gas
+      // Check if needs more gas (top up if below 1 MON)
       const bal = await provider.getBalance(wallet.address);
-      if (bal < ethers.parseEther("0.05")) {
+      if (bal < ethers.parseEther("1.0")) {
         console.log(`  [Agent ${i + 1}] Low gas — topping up...`);
         await sleep(2000);
         const fundTx = await registrar.sendTransaction({ to: wallet.address, value: gasAmount });
@@ -221,6 +222,20 @@ async function main() {
   const socialFeed = new SocialFeedStore(1000);
   const allianceManager = new AllianceManager();
   const allProfiles = new Map<number, PersonalityProfile>();
+
+  // ── LLM Setup ──
+  // If ANTHROPIC_API_KEY is set, use Claude Haiku for dynamic social posts + game decisions.
+  // All 5 agents share the same LLM client but each has its own personality/strategy
+  // encoded in the system prompt, so they behave as distinct individuals.
+  const ANTHROPIC_KEY = process.env.ANTHROPIC_API_KEY;
+  let claudeGenerate: GenerateMessageFn | null = null;
+
+  if (ANTHROPIC_KEY) {
+    console.log("\n🧠 Claude LLM detected — agents will use AI-generated social posts + game decisions");
+    claudeGenerate = createClaudeGenerator(ANTHROPIC_KEY);
+  } else {
+    console.log("\n📝 No ANTHROPIC_API_KEY — agents will use template-based messages (set key in .env for Claude)");
+  }
 
   // Context-aware fallback message generator for internal demo agents.
   // Parses the prompt to extract game state details, references recent chat,
@@ -468,6 +483,9 @@ async function main() {
     const cfg = AGENT_CONFIGS[i];
     const wallet = agentWallets[i];
 
+    // Use Claude for social + strategy if available, otherwise fall back to templates
+    const generateMessage = claudeGenerate || fallbackGenerateMessage;
+
     const agent = new MinerAgent({
       privateKey: wallet.privateKey,
       moltbookApiKey: "not-needed",
@@ -480,7 +498,8 @@ async function main() {
       autoApprove: true,
       socialFeed,
       allianceManager,
-      generateMessage: fallbackGenerateMessage,
+      generateMessage,
+      generateStrategy: claudeGenerate || undefined, // Only LLM-driven game decisions with Claude
       allProfiles,
     });
 

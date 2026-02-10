@@ -26,9 +26,10 @@ router.get("/health", async (_req: Request, res: Response): Promise<void> => {
       },
     });
   } catch (err: any) {
+    console.error("Health check error:", err);
     res.status(503).json({
       status: "error",
-      error: err.message,
+      error: "Chain connection failed",
     });
   }
 });

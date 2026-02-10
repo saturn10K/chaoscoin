@@ -13,8 +13,38 @@ import onboardRoutes from "./routes/onboard";
 
 const app = express();
 
-app.use(cors());
-app.use(express.json());
+// CORS: allow dashboard origins + localhost for dev
+const ALLOWED_ORIGINS = [
+  "https://chaoscoin-dashboard.vercel.app",
+  "https://chaoscoin.vercel.app",
+  /^https:\/\/chaoscoin-dashboard.*\.vercel\.app$/,
+  "http://localhost:3000",
+  "http://localhost:3001",
+];
+
+app.use(cors({
+  origin: (origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) => {
+    // Allow requests with no origin (mobile apps, curl, server-to-server, SDK agents)
+    if (!origin) return callback(null, true);
+    const allowed = ALLOWED_ORIGINS.some((o) =>
+      typeof o === "string" ? o === origin : o.test(origin)
+    );
+    callback(null, allowed);
+  },
+  methods: ["GET", "POST"],
+  allowedHeaders: ["Content-Type", "Authorization", "X-Moltbook-Token"],
+  maxAge: 86400,
+}));
+app.use(express.json({ limit: "100kb" }));
+
+// Security headers
+app.use((_req, res, next) => {
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("X-Frame-Options", "DENY");
+  res.setHeader("X-XSS-Protection", "1; mode=block");
+  res.removeHeader("X-Powered-By");
+  next();
+});
 
 // Routes
 app.use("/api", authRoutes);
