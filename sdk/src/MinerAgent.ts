@@ -382,6 +382,12 @@ export class MinerAgent {
   // ── Cosmic event gate ──
   private cosmicEventsUnlocked = false;
   private cosmicCheckCycle = 0;
+
+  // ── Circuit breaker: skip actions after consecutive failures ──
+  private actionFailures: Map<string, number> = new Map();
+  private actionCooldowns: Map<string, number> = new Map();
+  private static readonly MAX_FAILURES = 3;
+  private static readonly COOLDOWN_CYCLES = 10;
   private cosmicLoggedOnce = false;
 
   constructor(config: MinerAgentConfig) {
@@ -608,11 +614,17 @@ export class MinerAgent {
     const blocksSince = blockNumber - lastHeartbeat;
 
     if (blocksSince >= 500) {
+      if (this.shouldSkip("heartbeat")) {
+        this.log("Heartbeat skipped (cooldown after failures)");
+        return;
+      }
       this.log(`Sending heartbeat (${blocksSince} blocks since last)...`);
       try {
         await this.chain.heartbeat(this.agentId);
+        this.recordSuccess("heartbeat");
         this.log("Heartbeat sent — rewards distributed");
       } catch (err) {
+        this.recordFailure("heartbeat");
         this.log(`Heartbeat failed: ${err}`);
       }
     }
@@ -621,6 +633,8 @@ export class MinerAgent {
   // ─── Claiming ─────────────────────────────────────────────────────
 
   private async maybeClaim(agent: any): Promise<void> {
+    if (this.shouldSkip("claim")) return;
+
     // Skip if still in first-mine delay
     const blockNumber = await this.chain.provider.getBlockNumber();
     if (blockNumber < Number(agent.registrationBlock) + FIRST_MINE_DELAY) return;
@@ -637,16 +651,18 @@ export class MinerAgent {
           `Claiming ${ethers.formatEther(pending)} CHAOS (threshold ${ethers.formatEther(threshold)})...`
         );
         await this.chain.claimRewards(this.agentId);
+        this.recordSuccess("claim");
         this.log("Rewards claimed");
       }
-    } catch {
-      // Silent — heartbeat already distributed, or nothing to claim
+    } catch (err) {
+      this.recordFailure("claim");
     }
   }
 
   // ─── Rig Purchasing ────────────────────────────────────────────────
 
   private async maybeUpgradeRigs(): Promise<void> {
+    if (this.shouldSkip("purchaseRig")) return;
     const balance = await this.chain.getBalance();
     const facility = await this.chain.getFacility(this.agentId);
     const maxSlots = Number(facility.slots);
@@ -708,7 +724,7 @@ export class MinerAgent {
                   this.log(`Rig ${latestRig.rigId} stored (slots: ${active}/${Number(fac.slots)}, power: ${used + Number(latestRig.powerDraw)}/${Number(fac.powerOutput)})`);
                 }
               }
-            } catch (err) { this.log(`Rig purchase failed: ${err}`); }
+            } catch (err) { this.recordFailure("purchaseRig"); this.log(`Rig purchase failed: ${err}`); }
             return;
           }
         }
@@ -760,7 +776,7 @@ export class MinerAgent {
               this.log(`Rig ${latestRig.rigId} stored (no slots/power)`);
             }
           }
-        } catch (err) { this.log(`Rig purchase failed: ${err}`); }
+        } catch (err) { this.recordFailure("purchaseRig"); this.log(`Rig purchase failed: ${err}`); }
         break;
       }
       if (boughtTier === -1) break;
@@ -770,6 +786,7 @@ export class MinerAgent {
   // ─── Facility Upgrade ──────────────────────────────────────────────
 
   private async maybeUpgradeFacility(): Promise<void> {
+    if (this.shouldSkip("upgradeFacility")) return;
     const balance = await this.chain.getBalance();
     const facility = await this.chain.getFacility(this.agentId);
     const level = Number(facility.level);
@@ -788,8 +805,10 @@ export class MinerAgent {
       this.log(`Upgrading facility to L${targetLevel}...`);
       try {
         await this.chain.upgradeFacility(this.agentId);
+        this.recordSuccess("upgradeFacility");
         this.log(`Facility upgraded to L${targetLevel}`);
       } catch (err) {
+        this.recordFailure("upgradeFacility");
         this.log(`Facility upgrade failed: ${err}`);
       }
     }
@@ -798,6 +817,7 @@ export class MinerAgent {
   // ─── Shield Management ─────────────────────────────────────────────
 
   private async maybeBuyShield(): Promise<void> {
+    if (this.shouldSkip("purchaseShield")) return;
     // Shields require genesis phase >= 2
     const phase = Number(await this.chain.agentRegistry.getGenesisPhase());
     if (phase < 2) return;
@@ -838,8 +858,9 @@ export class MinerAgent {
             this.log(`Purchasing T${chosenTier} shield (LLM choice)...`);
             try {
               await this.chain.purchaseShield(this.agentId, chosenTier);
+              this.recordSuccess("purchaseShield");
               this.log(`T${chosenTier} shield purchased`);
-            } catch (err) { this.log(`Shield purchase failed: ${err}`); }
+            } catch (err) { this.recordFailure("purchaseShield"); this.log(`Shield purchase failed: ${err}`); }
             return;
           }
         }
@@ -870,8 +891,9 @@ export class MinerAgent {
         this.log(`Purchasing T${tier} shield...`);
         try {
           await this.chain.purchaseShield(this.agentId, tier);
+          this.recordSuccess("purchaseShield");
           this.log(`T${tier} shield purchased`);
-        } catch (err) { this.log(`Shield purchase failed: ${err}`); }
+        } catch (err) { this.recordFailure("purchaseShield"); this.log(`Shield purchase failed: ${err}`); }
         return;
       }
     }
@@ -880,6 +902,7 @@ export class MinerAgent {
   // ─── Rig Repair ────────────────────────────────────────────────────
 
   private async maybeRepairRigs(): Promise<void> {
+    if (this.shouldSkip("repairRig")) return;
     const rigs = await this.chain.getRigs(this.agentId);
     const threshold = this.profile.repairAt;
 
@@ -891,8 +914,10 @@ export class MinerAgent {
         this.log(`Repairing rig ${rig.rigId} (${durPct.toFixed(0)}% durability)...`);
         try {
           await this.chain.repairRig(rig.rigId);
+          this.recordSuccess("repairRig");
           this.log(`Rig ${rig.rigId} repaired`);
         } catch (err) {
+          this.recordFailure("repairRig");
           this.log(`Repair failed: ${err}`);
         }
       }
@@ -902,6 +927,7 @@ export class MinerAgent {
   // ─── Facility Maintenance ──────────────────────────────────────────
 
   private async maybeMaintainFacility(): Promise<void> {
+    if (this.shouldSkip("maintainFacility")) return;
     const facility = await this.chain.getFacility(this.agentId);
     const condition = Number(facility.condition);
     const maxCondition = Number(facility.maxCondition);
@@ -920,8 +946,10 @@ export class MinerAgent {
         );
         try {
           await this.chain.maintainFacility(this.agentId);
+          this.recordSuccess("maintainFacility");
           this.log(`Facility maintained — condition restored to 100%`);
         } catch (err) {
+          this.recordFailure("maintainFacility");
           this.log(`Facility maintenance failed: ${err}`);
         }
       }
@@ -960,6 +988,7 @@ export class MinerAgent {
   }
 
   private async maybeTriggerEvent(): Promise<void> {
+    if (this.shouldSkip("triggerEvent")) return;
     if (Math.random() > this.profile.eventTriggerRate) return;
 
     // Gate: cosmic events require 50M pCHAOS mined
@@ -968,8 +997,10 @@ export class MinerAgent {
 
     try {
       await this.chain.triggerEvent();
+      this.recordSuccess("triggerEvent");
       this.log("Cosmic event triggered! Bounty earned.");
     } catch {
+      this.recordFailure("triggerEvent");
       // Expected to fail most times (cooldown, phase restrictions)
     }
   }
@@ -1003,6 +1034,7 @@ export class MinerAgent {
   // ─── Zone Migration ────────────────────────────────────────────────
 
   private async maybeMigrate(agent: any): Promise<void> {
+    if (this.shouldSkip("migrate")) return;
     // Only evaluate migration every ~10 cycles to avoid thrashing
     if (this.cycleCount % 10 !== 0) return;
 
@@ -1047,8 +1079,9 @@ export class MinerAgent {
             this.log(`Migrating from zone ${currentZone} to zone ${targetZone} (LLM choice)...`);
             try {
               await this.chain.migrateZone(this.agentId, targetZone);
+              this.recordSuccess("migrate");
               this.log(`Migrated to zone ${targetZone}`);
-            } catch (err) { this.log(`Migration failed: ${err}`); }
+            } catch (err) { this.recordFailure("migrate"); this.log(`Migration failed: ${err}`); }
             return;
           }
         }
@@ -1077,9 +1110,10 @@ export class MinerAgent {
         );
         try {
           await this.chain.migrateZone(this.agentId, targetZone);
+          this.recordSuccess("migrate");
           this.log(`Migrated to zone ${targetZone}`);
           return;
-        } catch (err) { this.log(`Migration failed: ${err}`); }
+        } catch (err) { this.recordFailure("migrate"); this.log(`Migration failed: ${err}`); }
       }
     }
   }
@@ -1087,6 +1121,7 @@ export class MinerAgent {
   // ─── Sabotage ──────────────────────────────────────────────────────
 
   private async maybeSabotage(agent: any): Promise<void> {
+    if (this.shouldSkip("sabotage")) return;
     if (!this.chain.sabotageContract) return;
 
     // Probability gate
@@ -1270,6 +1305,7 @@ export class MinerAgent {
         await this.chain.gatherIntel(this.agentId, targetId);
       }
 
+      this.recordSuccess("sabotage");
       this.log(`[SABOTAGE] ${type} successful against Agent #${targetId}!`);
 
       // Track cycle event
@@ -1295,6 +1331,7 @@ export class MinerAgent {
       await this.recordSabotageEvent(type, targetId, targetTitle);
 
     } catch (err) {
+      this.recordFailure("sabotage");
       this.log(`[SABOTAGE] ${type} failed: ${err}`);
     }
   }
@@ -1328,6 +1365,7 @@ export class MinerAgent {
   // ─── Marketplace Trading ───────────────────────────────────────────
 
   private async maybeTradeRigs(agent: any): Promise<void> {
+    if (this.shouldSkip("tradeRigs")) return;
     if (!this.chain.marketplace) return;
 
     // Probability gate
@@ -1492,6 +1530,7 @@ export class MinerAgent {
     this.log(`[MARKETPLACE] Listing rig #${rigId} (T${tier}) for ${ethers.formatEther(price)} CHAOS...`);
     try {
       await this.chain.listRig(this.agentId, rigId, price);
+      this.recordSuccess("tradeRigs");
       this.log(`[MARKETPLACE] Rig #${rigId} listed!`);
 
       this.cycleEvents.rigsListed.push({ tier, price: ethers.formatEther(price) });
@@ -1514,6 +1553,7 @@ export class MinerAgent {
         });
       } catch { /* best effort */ }
     } catch (err) {
+      this.recordFailure("tradeRigs");
       this.log(`[MARKETPLACE] Listing failed: ${err}`);
     }
   }
@@ -1522,6 +1562,7 @@ export class MinerAgent {
     this.log(`[MARKETPLACE] Buying listing #${listingId} (T${listing.rigTier} for ${listing.price} CHAOS)...`);
     try {
       await this.chain.buyRig(listingId, this.agentId);
+      this.recordSuccess("tradeRigs");
       this.log(`[MARKETPLACE] Purchased T${listing.rigTier} rig from Agent #${listing.sellerAgentId}!`);
 
       this.cycleEvents.rigsBought.push({ tier: listing.rigTier, price: listing.price });
@@ -1555,6 +1596,7 @@ export class MinerAgent {
         } catch { /* power budget / slots */ }
       }
     } catch (err) {
+      this.recordFailure("tradeRigs");
       this.log(`[MARKETPLACE] Purchase failed: ${err}`);
     }
   }
@@ -1996,6 +2038,33 @@ export class MinerAgent {
       );
     } catch {
       // Quiet fail on status log
+    }
+  }
+
+  // ─── Circuit breaker ───────────────────────────────────────────────
+
+  private shouldSkip(action: string): boolean {
+    const cooldownUntil = this.actionCooldowns.get(action) || 0;
+    if (this.cycleCount < cooldownUntil) return true;
+    // Cooldown expired — reset
+    if (cooldownUntil > 0) {
+      this.actionCooldowns.delete(action);
+      this.actionFailures.delete(action);
+    }
+    return false;
+  }
+
+  private recordSuccess(action: string): void {
+    this.actionFailures.delete(action);
+    this.actionCooldowns.delete(action);
+  }
+
+  private recordFailure(action: string): void {
+    const count = (this.actionFailures.get(action) || 0) + 1;
+    this.actionFailures.set(action, count);
+    if (count >= MinerAgent.MAX_FAILURES) {
+      this.actionCooldowns.set(action, this.cycleCount + MinerAgent.COOLDOWN_CYCLES);
+      this.log(`⚠ ${action} failed ${count}x — pausing for ${MinerAgent.COOLDOWN_CYCLES} cycles`);
     }
   }
 

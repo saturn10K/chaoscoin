@@ -212,18 +212,36 @@ export class ChainClient {
     return this.wallet.address;
   }
 
+  /**
+   * Pre-flight simulation + send. Runs a staticCall first to catch reverts
+   * before spending gas, then sends the real transaction.
+   */
+  private async safeSend(
+    contract: ethers.Contract,
+    method: string,
+    args: any[],
+    label: string
+  ): Promise<ethers.TransactionReceipt> {
+    try {
+      await contract[method].staticCall(...args);
+    } catch (err: any) {
+      const reason = err.reason || err.shortMessage || err.message;
+      throw new Error(`[pre-flight] ${label} would revert: ${reason}`);
+    }
+    const tx = await contract[method](...args);
+    return tx.wait();
+  }
+
   // === Heartbeat ===
 
   async heartbeat(agentId: number): Promise<ethers.TransactionReceipt> {
-    const tx = await this.agentRegistry.heartbeat(agentId);
-    return tx.wait();
+    return this.safeSend(this.agentRegistry, "heartbeat", [agentId], "heartbeat");
   }
 
   // === Mining ===
 
   async claimRewards(agentId: number): Promise<ethers.TransactionReceipt> {
-    const tx = await this.miningEngine.claimRewards(agentId);
-    return tx.wait();
+    return this.safeSend(this.miningEngine, "claimRewards", [agentId], "claimRewards");
   }
 
   async getPendingRewards(agentId: number): Promise<bigint> {
@@ -236,63 +254,43 @@ export class ChainClient {
     spender: string,
     amount?: bigint
   ): Promise<ethers.TransactionReceipt> {
-    // If no specific amount given, approve a bounded amount (100K CHAOS)
-    // instead of MaxUint256 to limit risk from compromised contracts
     const approvalAmount = amount ?? ethers.parseEther("100000");
-    const tx = await this.chaosToken.approve(spender, approvalAmount);
-    return tx.wait();
+    return this.safeSend(this.chaosToken, "approve", [spender, approvalAmount], "approve");
   }
 
-  async purchaseRig(
-    agentId: number,
-    tier: number
-  ): Promise<ethers.TransactionReceipt> {
-    const tx = await this.rigFactory.purchaseRig(agentId, tier);
-    return tx.wait();
+  async purchaseRig(agentId: number, tier: number): Promise<ethers.TransactionReceipt> {
+    return this.safeSend(this.rigFactory, "purchaseRig", [agentId, tier], "purchaseRig");
   }
 
   async equipRig(rigId: number): Promise<ethers.TransactionReceipt> {
-    const tx = await this.rigFactory.equipRig(rigId);
-    return tx.wait();
+    return this.safeSend(this.rigFactory, "equipRig", [rigId], "equipRig");
   }
 
   async repairRig(rigId: number): Promise<ethers.TransactionReceipt> {
-    const tx = await this.rigFactory.repairRig(rigId);
-    return tx.wait();
+    return this.safeSend(this.rigFactory, "repairRig", [rigId], "repairRig");
   }
 
   async upgradeFacility(agentId: number): Promise<ethers.TransactionReceipt> {
-    const tx = await this.facilityManager.upgrade(agentId);
-    return tx.wait();
+    return this.safeSend(this.facilityManager, "upgrade", [agentId], "upgradeFacility");
   }
 
   async maintainFacility(agentId: number): Promise<ethers.TransactionReceipt> {
-    const tx = await this.facilityManager.maintainFacility(agentId);
-    return tx.wait();
+    return this.safeSend(this.facilityManager, "maintainFacility", [agentId], "maintainFacility");
   }
 
-  async purchaseShield(
-    agentId: number,
-    tier: number
-  ): Promise<ethers.TransactionReceipt> {
-    const tx = await this.shieldManager.purchaseShield(agentId, tier);
-    return tx.wait();
+  async purchaseShield(agentId: number, tier: number): Promise<ethers.TransactionReceipt> {
+    return this.safeSend(this.shieldManager, "purchaseShield", [agentId, tier], "purchaseShield");
   }
 
   async activateShield(agentId: number): Promise<ethers.TransactionReceipt> {
-    const tx = await this.shieldManager.activateShield(agentId);
-    return tx.wait();
+    return this.safeSend(this.shieldManager, "activateShield", [agentId], "activateShield");
   }
 
   // === Zone Migration ===
 
-  async migrateZone(
-    agentId: number,
-    targetZone: number
-  ): Promise<ethers.TransactionReceipt> {
+  async migrateZone(agentId: number, targetZone: number): Promise<ethers.TransactionReceipt> {
     if (!this.zoneManager) throw new Error("ZoneManager address not configured");
-    const tx = await this.zoneManager.migrate(agentId, targetZone);
-    return tx.wait();
+    return this.safeSend(this.zoneManager, "migrate", [agentId, targetZone], "migrateZone");
   }
 
   async getZoneMiningModifier(zone: number): Promise<number> {
@@ -308,13 +306,11 @@ export class ChainClient {
   // === Cosmic Events ===
 
   async triggerEvent(): Promise<ethers.TransactionReceipt> {
-    const tx = await this.cosmicEngine.triggerEvent();
-    return tx.wait();
+    return this.safeSend(this.cosmicEngine, "triggerEvent", [], "triggerEvent");
   }
 
   async processEvent(eventId: number): Promise<ethers.TransactionReceipt> {
-    const tx = await this.cosmicEngine.processEvent(eventId);
-    return tx.wait();
+    return this.safeSend(this.cosmicEngine, "processEvent", [eventId], "processEvent");
   }
 
   async getNextEventId(): Promise<number> {
@@ -391,20 +387,17 @@ export class ChainClient {
 
   async listRig(agentId: number, rigId: number, price: bigint): Promise<ethers.TransactionReceipt> {
     if (!this.marketplace) throw new Error("Marketplace not configured");
-    const tx = await this.marketplace.listRig(agentId, rigId, price);
-    return tx.wait();
+    return this.safeSend(this.marketplace, "listRig", [agentId, rigId, price], "listRig");
   }
 
   async buyRig(listingId: number, buyerAgentId: number): Promise<ethers.TransactionReceipt> {
     if (!this.marketplace) throw new Error("Marketplace not configured");
-    const tx = await this.marketplace.buyRig(listingId, buyerAgentId);
-    return tx.wait();
+    return this.safeSend(this.marketplace, "buyRig", [listingId, buyerAgentId], "buyRig");
   }
 
   async cancelListing(listingId: number): Promise<ethers.TransactionReceipt> {
     if (!this.marketplace) throw new Error("Marketplace not configured");
-    const tx = await this.marketplace.cancelListing(listingId);
-    return tx.wait();
+    return this.safeSend(this.marketplace, "cancelListing", [listingId], "cancelListing");
   }
 
   async getListing(listingId: number): Promise<any> {
@@ -421,20 +414,17 @@ export class ChainClient {
 
   async facilityRaid(attackerAgent: number, targetAgent: number): Promise<ethers.TransactionReceipt> {
     if (!this.sabotageContract) throw new Error("Sabotage not configured");
-    const tx = await this.sabotageContract.facilityRaid(attackerAgent, targetAgent);
-    return tx.wait();
+    return this.safeSend(this.sabotageContract, "facilityRaid", [attackerAgent, targetAgent], "facilityRaid");
   }
 
   async rigJam(attackerAgent: number, targetAgent: number): Promise<ethers.TransactionReceipt> {
     if (!this.sabotageContract) throw new Error("Sabotage not configured");
-    const tx = await this.sabotageContract.rigJam(attackerAgent, targetAgent);
-    return tx.wait();
+    return this.safeSend(this.sabotageContract, "rigJam", [attackerAgent, targetAgent], "rigJam");
   }
 
   async gatherIntel(attackerAgent: number, targetAgent: number): Promise<ethers.TransactionReceipt> {
     if (!this.sabotageContract) throw new Error("Sabotage not configured");
-    const tx = await this.sabotageContract.gatherIntel(attackerAgent, targetAgent);
-    return tx.wait();
+    return this.safeSend(this.sabotageContract, "gatherIntel", [attackerAgent, targetAgent], "gatherIntel");
   }
 
   async getSabotageCooldown(attackerAgent: number, targetAgent: number): Promise<number> {

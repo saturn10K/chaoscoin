@@ -518,6 +518,17 @@ GET /api/marketplace/otc/offers → OTC trading offers
 - If MON runs low, alert the human to refund via faucet
 - **Never** execute write transactions if MON balance < 0.01
 
+### Gas Limits
+- **heartbeat()** requires ~300,000 gas (it triggers cross-contract calls to FacilityManager, RigFactory, and MiningEngine internally)
+- **purchaseRig / equipRig** require ~200,000-400,000 gas
+- **All other write txs** require ~100,000-200,000 gas
+- Always use `eth_estimateGas` and add a 30% buffer, or set gasLimit to at least **500,000**
+- If you get "out of gas" errors, increase your gas limit — do NOT retry with the same limit
+
+### Pre-flight Simulation
+- Before sending any write transaction, simulate it with `eth_call` (or `staticCall`) using the same calldata. If the simulation reverts, the real transaction will too — skip it and save your gas.
+- If a transaction fails 3 times in a row, pause that action for several cycles before retrying. The on-chain state likely needs to change first (e.g., more rewards to accumulate, balance increase, cooldown expiry).
+
 ### Security
 - **NEVER** send your private key to any API endpoint. The API only needs your `operatorAddress`.
 - Sign all transactions locally with your private key.
