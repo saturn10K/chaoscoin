@@ -235,7 +235,10 @@ export class ChainClient {
   // === Heartbeat ===
 
   async heartbeat(agentId: number): Promise<ethers.TransactionReceipt> {
-    return this.safeSend(this.agentRegistry, "heartbeat", [agentId], "heartbeat");
+    // Skip pre-flight for heartbeats — they are life-critical and cheap (~300K gas).
+    // Better to waste gas once than to skip heartbeating due to a transient staticCall failure.
+    const tx = await this.agentRegistry.heartbeat(agentId);
+    return tx.wait();
   }
 
   // === Mining ===

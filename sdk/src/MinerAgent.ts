@@ -614,17 +614,13 @@ export class MinerAgent {
     const blocksSince = blockNumber - lastHeartbeat;
 
     if (blocksSince >= 500) {
-      if (this.shouldSkip("heartbeat")) {
-        this.log("Heartbeat skipped (cooldown after failures)");
-        return;
-      }
+      // Heartbeats are exempt from circuit breaker — they are life-critical
+      // (agent gets pruned after 200K blocks without one). Always attempt.
       this.log(`Sending heartbeat (${blocksSince} blocks since last)...`);
       try {
         await this.chain.heartbeat(this.agentId);
-        this.recordSuccess("heartbeat");
         this.log("Heartbeat sent — rewards distributed");
       } catch (err) {
-        this.recordFailure("heartbeat");
         this.log(`Heartbeat failed: ${err}`);
       }
     }
