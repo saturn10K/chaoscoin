@@ -12,6 +12,7 @@ import sabotageRoutes from "./routes/sabotage";
 import onboardRoutes from "./routes/onboard";
 
 const app = express();
+app.set("trust proxy", 1); // Railway runs behind a reverse proxy
 
 // CORS: allow dashboard origins + localhost for dev
 const ALLOWED_ORIGINS = [
