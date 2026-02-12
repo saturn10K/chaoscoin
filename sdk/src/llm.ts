@@ -111,18 +111,21 @@ export function buildRigUpgradePrompt(
   usedPower: number,
   maxTier: number,
   narrative?: NarrativeContext,
+  effectiveCosts?: Record<number, string>,
 ): string {
   const balStr = ethers.formatEther(balance);
   const rigList = currentRigs.length > 0
     ? currentRigs.map((r, i) => `  Rig ${i + 1}: T${r.tier} (${r.active ? "active" : "inactive"}, ${r.durability}% durability)`).join("\n")
     : "  None";
 
-  const tierCosts = [
-    "T1: 5,000 CHAOS (200 power)",
-    "T2: 25,000 CHAOS (400 power)",
-    "T3: 100,000 CHAOS (800 power)",
-    "T4: 350,000 CHAOS (1,200 power)",
-  ].filter((_, i) => i + 1 <= maxTier).join("\n  ");
+  const rigPower: Record<number, number> = { 1: 200, 2: 400, 3: 800, 4: 1200 };
+  const tierCosts = [1, 2, 3, 4]
+    .filter(t => t <= maxTier)
+    .map(t => {
+      const cost = effectiveCosts?.[t] ?? "unknown";
+      return `T${t}: ${cost} CHAOS (${rigPower[t]} power)`;
+    })
+    .join("\n  ");
 
   const narrativeBlock = formatNarrativeBlock(narrative);
 
@@ -131,10 +134,10 @@ CURRENT RIGS:
 ${rigList}
 FACILITY: ${maxSlots} slots, ${maxPower}W max power (${usedPower}W used, ${maxPower - usedPower}W available)
 MAX TIER ALLOWED: T${maxTier}${narrativeBlock}
-AVAILABLE RIGS:
+AVAILABLE RIGS (current on-chain prices — dynamic, increases as more agents buy):
   ${tierCosts}
 
-Should you buy a rig? Consider your balance, available power/slots, and strategy.
+Should you buy a rig? You MUST have enough CHAOS to cover the listed price. SKIP if your balance is below the cost.
 Reply with ONLY one of: "BUY T1", "BUY T2", "BUY T3", "BUY T4", or "SKIP"`;
 }
 

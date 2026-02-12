@@ -714,6 +714,10 @@ export class MinerAgent {
           durability: r.maxDurability > 0n ? Math.round(Number(r.durability * 100n / r.maxDurability)) : 100,
         }));
         const narrative = this.buildNarrativeContext();
+        const effectiveCosts: Record<number, string> = {};
+        for (let t = 1; t <= maxTier; t++) {
+          effectiveCosts[t] = ethers.formatEther(await this.chain.getEffectiveRigCost(t));
+        }
         const decision = await this.generateStrategyFn(
           buildStrategySystemPrompt({
             title: this.personality.title,
@@ -721,15 +725,16 @@ export class MinerAgent {
             emoji: this.personality.emoji,
             strategy: this.config.strategy || "balanced",
           }),
-          buildRigUpgradePrompt(balance, rigSummary, maxSlots, maxPower, usedPower, maxTier, narrative),
+          buildRigUpgradePrompt(balance, rigSummary, maxSlots, maxPower, usedPower, maxTier, narrative, effectiveCosts),
         );
         this.log(`[LLM RIG] ${decision}`);
 
         const tierMatch = decision.match(/BUY\s+T(\d)/i) || decision.match(/T(\d)/i);
         if (tierMatch) {
           const chosenTier = Math.min(parseInt(tierMatch[1]), maxTier);
-          if (chosenTier >= 1 && chosenTier <= 4 && balance >= RIG_COSTS[chosenTier]) {
-            this.log(`Purchasing T${chosenTier} rig (LLM choice)...`);
+          const effectiveCost = await this.chain.getEffectiveRigCost(chosenTier);
+          if (chosenTier >= 1 && chosenTier <= 4 && balance >= effectiveCost) {
+            this.log(`Purchasing T${chosenTier} rig (LLM choice, effective cost: ${ethers.formatEther(effectiveCost)} CHAOS)...`);
             try {
               await this.chain.purchaseRig(this.agentId, chosenTier);
               this.log(`T${chosenTier} rig purchased`);
@@ -768,8 +773,8 @@ export class MinerAgent {
     for (let buy = 0; buy < maxBuysPerCycle; buy++) {
       let boughtTier = -1;
       for (let tier = maxTier; tier >= 1; tier--) {
-        const cost = RIG_COSTS[tier];
-        const reserve = cost * BigInt(this.profile.reserveMultiplier);
+        const effectiveCost = await this.chain.getEffectiveRigCost(tier);
+        const reserve = effectiveCost * BigInt(this.profile.reserveMultiplier);
         if (remaining < reserve) continue;
 
         const rigPower = RIG_POWER[tier];
@@ -777,12 +782,12 @@ export class MinerAgent {
         if (currentSlots >= maxSlots) break;
         if (usedPower + rigPower * (rigsBought + 1) > maxPower) continue;
 
-        this.log(`Purchasing T${tier} rig...`);
+        this.log(`Purchasing T${tier} rig (effective cost: ${ethers.formatEther(effectiveCost)} CHAOS)...`);
         try {
           await this.chain.purchaseRig(this.agentId, tier);
           this.log(`T${tier} rig purchased`);
           boughtTier = tier;
-          remaining -= RIG_COSTS[tier];
+          remaining -= effectiveCost;
 
           const rigs = await this.chain.getRigs(this.agentId);
           const latestRig = rigs[rigs.length - 1];
