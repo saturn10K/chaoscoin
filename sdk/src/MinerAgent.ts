@@ -390,6 +390,9 @@ export class MinerAgent {
   private static readonly COOLDOWN_CYCLES = 10;
   private cosmicLoggedOnce = false;
 
+  // ── Faucet self-funding ──
+  private lastFaucetAttempt = 0;
+
   constructor(config: MinerAgentConfig) {
     this.config = config;
     this.profile = STRATEGY_PROFILES[config.strategy || "balanced"];
@@ -468,12 +471,38 @@ export class MinerAgent {
     // Reset cycle events
     this.cycleEvents = { attacksMade: [], attacksReceived: [], rigsBought: [], rigsSold: [], rigsListed: [] };
 
-    // ── Gas guard: skip all write txs if MON balance is critically low ──
-    const gasBal = await this.chain.provider.getBalance(this.chain.address);
-    const MIN_GAS = ethers.parseEther("0.01"); // 0.01 MON
-    const gasOk = gasBal >= MIN_GAS;
+    // ── Gas guard: self-fund from faucet if MON is low ──
+    let gasBal = await this.chain.provider.getBalance(this.chain.address);
+    const MIN_GAS = ethers.parseEther("0.1"); // 0.1 MON threshold
+    if (gasBal < MIN_GAS) {
+      this.log(`⚠ Low gas (${ethers.formatEther(gasBal)} MON) — requesting faucet...`);
+      const now = Date.now();
+      if (now - this.lastFaucetAttempt > 10 * 60_000) { // Max once per 10 min
+        this.lastFaucetAttempt = now;
+        try {
+          const res = await fetch("https://agents.devnads.com/v1/faucet", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ chainId: this.config.chainId, address: this.chain.address }),
+          });
+          if (res.ok) {
+            const data = await res.json() as { amount: string; txHash: string };
+            this.log(`[GAS] Faucet sent ${ethers.formatEther(data.amount)} MON (tx: ${data.txHash})`);
+            await this.sleep(3000); // Wait for tx to land
+            gasBal = await this.chain.provider.getBalance(this.chain.address);
+          } else {
+            this.log(`[GAS] Faucet returned ${res.status}`);
+          }
+        } catch (err: any) {
+          this.log(`[GAS] Faucet request failed: ${err.message}`);
+        }
+      } else {
+        this.log(`[GAS] Faucet cooldown active — skipping`);
+      }
+    }
+    const gasOk = gasBal >= ethers.parseEther("0.01");
     if (!gasOk) {
-      this.log(`⚠ Low gas (${ethers.formatEther(gasBal)} MON) — skipping write txs this cycle`);
+      this.log(`⚠ Still low gas (${ethers.formatEther(gasBal)} MON) — skipping write txs this cycle`);
     }
 
     // a. HEARTBEAT — always first (triggers mint + distribute rewards on-chain)
