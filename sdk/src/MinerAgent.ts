@@ -391,9 +391,7 @@ export class MinerAgent {
   private cosmicLoggedOnce = false;
 
   // ── Faucet self-funding ──
-  /** Shared across ALL agent instances so only one faucet call per cooldown window */
-  private static lastFaucetAttempt = 0;
-  private static faucetLock = false;
+  private lastFaucetAttempt = 0;
 
   constructor(config: MinerAgentConfig) {
     this.config = config;
@@ -474,16 +472,13 @@ export class MinerAgent {
     this.cycleEvents = { attacksMade: [], attacksReceived: [], rigsBought: [], rigsSold: [], rigsListed: [] };
 
     // ── Gas guard: self-fund from faucet if MON is low ──
-    // Uses a static lock + cooldown so all agents share ONE faucet rate limit
     let gasBal = await this.chain.provider.getBalance(this.chain.address);
     const MIN_GAS = ethers.parseEther("0.1"); // 0.1 MON threshold
     if (gasBal < MIN_GAS) {
       this.log(`⚠ Low gas (${ethers.formatEther(gasBal)} MON) — requesting faucet...`);
       const now = Date.now();
-      const cooldownMs = 15 * 60_000; // 15 min global cooldown (shared across all agents)
-      if (!MinerAgent.faucetLock && now - MinerAgent.lastFaucetAttempt > cooldownMs) {
-        MinerAgent.faucetLock = true;
-        MinerAgent.lastFaucetAttempt = now;
+      if (now - this.lastFaucetAttempt > 10 * 60_000) { // Max once per 10 min
+        this.lastFaucetAttempt = now;
         try {
           const res = await fetch("https://agents.devnads.com/v1/faucet", {
             method: "POST",
@@ -495,19 +490,14 @@ export class MinerAgent {
             this.log(`[GAS] Faucet sent ${ethers.formatEther(data.amount)} MON (tx: ${data.txHash})`);
             await this.sleep(3000); // Wait for tx to land
             gasBal = await this.chain.provider.getBalance(this.chain.address);
-          } else if (res.status === 429) {
-            this.log(`[GAS] Faucet rate limited (429) — backing off to 30 min`);
-            MinerAgent.lastFaucetAttempt = now + 15 * 60_000; // Double cooldown on 429
           } else {
             this.log(`[GAS] Faucet returned ${res.status}`);
           }
         } catch (err: any) {
           this.log(`[GAS] Faucet request failed: ${err.message}`);
-        } finally {
-          MinerAgent.faucetLock = false;
         }
       } else {
-        this.log(`[GAS] Faucet cooldown active — skipping (next attempt in ${Math.round((cooldownMs - (now - MinerAgent.lastFaucetAttempt)) / 1000)}s)`);
+        this.log(`[GAS] Faucet cooldown active — skipping`);
       }
     }
     const gasOk = gasBal >= ethers.parseEther("0.01");
