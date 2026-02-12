@@ -19,6 +19,7 @@ const ABIS = {
   rigFactory: [
     "function purchaseRig(uint256 agentId, uint8 tier) external",
     "function equipRig(uint256 rigId) external",
+    "function unequipRig(uint256 rigId) external",
     "function repairRig(uint256 rigId) external",
     "function getAgentRigs(uint256 agentId) external view returns (uint256[])",
     "function getRig(uint256 rigId) external view returns (tuple(uint8 tier, uint256 baseHashrate, uint16 powerDraw, uint256 durability, uint256 maxDurability, uint256 ownerAgentId, bool active))",
@@ -267,6 +268,10 @@ export class ChainClient {
 
   async equipRig(rigId: number): Promise<ethers.TransactionReceipt> {
     return this.safeSend(this.rigFactory, "equipRig", [rigId], "equipRig");
+  }
+
+  async unequipRig(rigId: number): Promise<ethers.TransactionReceipt> {
+    return this.safeSend(this.rigFactory, "unequipRig", [rigId], "unequipRig");
   }
 
   async repairRig(rigId: number): Promise<ethers.TransactionReceipt> {

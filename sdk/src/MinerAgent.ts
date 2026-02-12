@@ -297,6 +297,9 @@ const RIG_COSTS: bigint[] = [
 // Rig power draw by tier
 const RIG_POWER: number[] = [50, 200, 400, 800, 1200];
 
+// Base hashrate by tier (before quirks)
+const RIG_HASHRATE: number[] = [10, 50, 150, 400, 900];
+
 // Facility configs: [cost, slots, powerOutput]
 const FACILITY_LEVELS: { cost: bigint; slots: number; power: number }[] = [
   { cost: 0n, slots: 2, power: 500 },
@@ -334,6 +337,11 @@ const ZONE_NAMES = [
   "The Nebula Depths", "The Kuiper Expanse", "The Trisolaran Reach",
   "The Pocket Rim", "The Singer Void",
 ];
+
+const EVENT_TYPE_NAMES: Record<number, string> = {
+  0: "Solar Breeze", 1: "Cosmic Dust Cloud", 2: "Sophon Pulse",
+  3: "Gravity Wave", 4: "Dark Forest Strike", 5: "Solar Flare Cascade",
+};
 
 /** Track events that happened this cycle for social post context */
 interface CycleEvents {
@@ -389,6 +397,14 @@ export class MinerAgent {
   private static readonly MAX_FAILURES = 3;
   private static readonly COOLDOWN_CYCLES = 10;
   private cosmicLoggedOnce = false;
+
+  // ── Equipment rebalancing ──
+  private lastRebalanceCycle = 0;
+
+  // ── Cosmic event reaction ──
+  private lastSeenEventId = 0;
+  private recentCosmicEvent: { eventId: number; type: number; tier: number; zone: number; affectedMask: number } | null = null;
+  private cosmicShockCyclesLeft = 0;
 
   // ── Faucet self-funding ──
   private lastFaucetAttempt = 0;
@@ -520,6 +536,8 @@ export class MinerAgent {
         await this.maybeUpgradeRigs();
         await this.maybeUpgradeFacility();
       }
+      // Rebalance: swap out weak rigs for better ones when facility allows
+      await this.rebalanceEquipment();
     }
 
     // f. BUY/UPGRADE SHIELD
@@ -538,6 +556,9 @@ export class MinerAgent {
     if (gasOk && this.profile.processEvents) {
       await this.maybeProcessEvents();
     }
+
+    // i2. CHECK COSMIC IMPACT — react to new cosmic events
+    if (gasOk) await this.checkCosmicImpact();
 
     // j. EVALUATE ZONE MIGRATION
     if (gasOk && this.profile.willMigrate) {
@@ -844,6 +865,91 @@ export class MinerAgent {
     }
   }
 
+  // ─── Equipment Rebalancing ───────────────────────────────────────────
+
+  private async rebalanceEquipment(): Promise<void> {
+    // Rate-limit: skip if fewer than 5 cycles since last rebalance
+    if (this.cycleCount - this.lastRebalanceCycle < 5) return;
+    this.lastRebalanceCycle = this.cycleCount;
+
+    try {
+      const rigs = await this.chain.getRigs(this.agentId);
+      if (rigs.length === 0) return;
+
+      const facility = await this.chain.getFacility(this.agentId);
+      const maxSlots = Number(facility.slots);
+      const maxPower = Number(facility.powerOutput);
+
+      // Score each rig: tierHashrate × (durability / maxDurability)
+      const scored = rigs.map((r: any) => {
+        const tier = Number(r.tier);
+        const durPct = r.maxDurability > 0n
+          ? Number(r.durability) / Number(r.maxDurability)
+          : 1;
+        const score = (RIG_HASHRATE[tier] || 0) * durPct;
+        const power = RIG_POWER[tier] || 0;
+        return {
+          rigId: Number(r.rigId),
+          tier,
+          active: r.active as boolean,
+          durPct,
+          score,
+          power,
+        };
+      }).filter(r => r.durPct > 0); // Ignore dead rigs (0 durability)
+
+      if (scored.length === 0) return;
+
+      // Greedy knapsack: sort descending by score, pick rigs that fit power+slots
+      const sorted = [...scored].sort((a, b) => b.score - a.score);
+      const optimal: Set<number> = new Set();
+      let usedPower = 0;
+      let usedSlots = 0;
+
+      for (const rig of sorted) {
+        if (usedSlots >= maxSlots) break;
+        if (usedPower + rig.power > maxPower) continue;
+        optimal.add(rig.rigId);
+        usedPower += rig.power;
+        usedSlots++;
+      }
+
+      // Compare current equipped set vs optimal
+      const currentEquipped = new Set(scored.filter(r => r.active).map(r => r.rigId));
+
+      const toUnequip = [...currentEquipped].filter(id => !optimal.has(id));
+      const toEquip = [...optimal].filter(id => !currentEquipped.has(id));
+
+      if (toUnequip.length === 0 && toEquip.length === 0) return;
+
+      this.log(`[REBALANCE] Optimizing loadout: unequip ${toUnequip.length}, equip ${toEquip.length} (slots: ${usedSlots}/${maxSlots}, power: ${usedPower}/${maxPower}W)`);
+
+      // Unequip first to free slots/power
+      for (const rigId of toUnequip) {
+        try {
+          await this.chain.unequipRig(rigId);
+          const rig = scored.find(r => r.rigId === rigId);
+          this.log(`[REBALANCE] Unequipped rig ${rigId} (T${rig?.tier}, score: ${rig?.score.toFixed(0)})`);
+        } catch (err) {
+          this.log(`[REBALANCE] Failed to unequip rig ${rigId}: ${err}`);
+        }
+      }
+
+      // Equip new optimal rigs
+      for (const rigId of toEquip) {
+        try {
+          await this.chain.equipRig(rigId);
+          const rig = scored.find(r => r.rigId === rigId);
+          this.log(`[REBALANCE] Equipped rig ${rigId} (T${rig?.tier}, score: ${rig?.score.toFixed(0)})`);
+        } catch (err) {
+          this.log(`[REBALANCE] Failed to equip rig ${rigId}: ${err}`);
+        }
+      }
+    } catch (err) {
+      this.log(`[REBALANCE] Error: ${err}`);
+    }
+  }
+
   // ─── Shield Management ─────────────────────────────────────────────
 
   private async maybeBuyShield(): Promise<void> {
@@ -900,20 +1006,21 @@ export class MinerAgent {
       }
     }
 
-    // ── Hardcoded fallback ──
-    if (this.profile.shieldPriority === 0) return;
+    // ── Hardcoded fallback (uses effective profile for cosmic shock override) ──
+    const shieldProfile = this.getEffectiveProfile();
+    if (shieldProfile.shieldPriority === 0) return;
 
     const needsShield =
       currentTier === 0 ||
       charges === 0 ||
-      (this.profile.shieldPriority === 2 && currentTier < this.profile.targetShieldTier);
+      (shieldProfile.shieldPriority === 2 && currentTier < shieldProfile.targetShieldTier);
 
     if (!needsShield) return;
 
-    const maxTier = Math.min(this.profile.targetShieldTier, 2);
+    const maxTier = Math.min(shieldProfile.targetShieldTier, 2);
     for (let tier = maxTier; tier >= 1; tier--) {
       const cost = SHIELD_COSTS[tier - 1];
-      const reserve = this.profile.shieldPriority === 2
+      const reserve = shieldProfile.shieldPriority === 2
         ? cost
         : cost * BigInt(this.profile.reserveMultiplier);
 
@@ -934,7 +1041,7 @@ export class MinerAgent {
   private async maybeRepairRigs(): Promise<void> {
     if (this.shouldSkip("repairRig")) return;
     const rigs = await this.chain.getRigs(this.agentId);
-    const threshold = this.profile.repairAt;
+    const threshold = this.getEffectiveProfile().repairAt;
 
     for (const rig of rigs) {
       if (!rig.active) continue;
@@ -1061,6 +1168,73 @@ export class MinerAgent {
     }
   }
 
+  // ─── Cosmic Impact Reactions ───────────────────────────────────────
+
+  private async checkCosmicImpact(): Promise<void> {
+    try {
+      const nextId = await this.chain.getNextEventId();
+      if (nextId <= 1) return; // No events ever fired
+      const latestId = nextId - 1;
+      if (latestId <= this.lastSeenEventId) return; // Already reacted
+      this.lastSeenEventId = latestId;
+
+      const evt = await this.chain.getCosmicEvent(latestId);
+      const eventType = Number(evt.eventType);
+      const tier = Number(evt.severityTier);
+      const originZone = Number(evt.originZone);
+      const affectedMask = Number(evt.affectedZonesMask);
+
+      // Check if our zone is affected
+      const agent = await this.chain.getAgent(this.agentId);
+      const myZone = Number(agent.zone);
+      const isAffected = (affectedMask & (1 << myZone)) !== 0;
+
+      const eventName = EVENT_TYPE_NAMES[eventType] || "Unknown Event";
+      this.log(`🌌 Cosmic Event #${latestId}: ${eventName} (T${tier}) from Zone ${originZone} — ${isAffected ? "HIT our zone!" : "missed us"}`);
+
+      if (isAffected) {
+        // Check if shield protected us
+        const shield = await this.chain.getShield(this.agentId);
+        const hadShield = Number(shield.tier) > 0 && Number(shield.charges) > 0;
+
+        if (hadShield) {
+          this.applyDriftEvent("shield_saved");
+          this.log(`🛡 Shield absorbed the ${eventName} — feeling smug`);
+        } else {
+          this.applyDriftEvent("cosmic_hit");
+          this.log(`💥 ${eventName} hit with no shield — paranoia rising`);
+        }
+
+        // Store for social posts
+        this.recentCosmicEvent = { eventId: latestId, type: eventType, tier, zone: originZone, affectedMask };
+
+        // Cosmic shock: temporary strategy shift
+        this.cosmicShockCyclesLeft = tier >= 2 ? 5 : 3;
+        this.log(`⚡ Cosmic shock active for ${this.cosmicShockCyclesLeft} cycles`);
+      } else {
+        // Dodged it — showmanship boost
+        this.applyDriftEvent("cosmic_dodge");
+        // Still store for bragging in social posts
+        this.recentCosmicEvent = { eventId: latestId, type: eventType, tier, zone: originZone, affectedMask };
+      }
+    } catch {
+      // Silent fail — cosmic events may not be available yet
+    }
+  }
+
+  // ─── Cosmic Shock: Temporary Strategy Override ────────────────────
+
+  private getEffectiveProfile(): StrategyProfile {
+    if (this.cosmicShockCyclesLeft <= 0) return this.profile;
+    // During cosmic shock: prioritize shields, reduce aggression, repair sooner
+    return {
+      ...this.profile,
+      shieldPriority: Math.max(this.profile.shieldPriority, 2),
+      sabotageRate: this.profile.sabotageRate * 0.3,
+      repairAt: Math.min(this.profile.repairAt + 20, 90),
+    };
+  }
+
   // ─── Zone Migration ────────────────────────────────────────────────
 
   private async maybeMigrate(agent: any): Promise<void> {
@@ -1155,10 +1329,11 @@ export class MinerAgent {
     if (!this.chain.sabotageContract) return;
 
     // Probability gate
-    if (Math.random() > this.profile.sabotageRate) return;
+    const effectiveProfile = this.getEffectiveProfile();
+    if (Math.random() > effectiveProfile.sabotageRate) return;
 
     const balance = await this.chain.getBalance();
-    if (balance < this.profile.sabotageMinBalance) return;
+    if (balance < effectiveProfile.sabotageMinBalance) return;
 
     // Build target list from allProfiles — skip self, skip allies
     const targetIds: number[] = [];
@@ -1744,6 +1919,9 @@ export class MinerAgent {
 
     // Decay recent damage over time
     this.recentDamageReceived = Math.max(0, this.recentDamageReceived - 5);
+
+    // Decay cosmic shock
+    if (this.cosmicShockCyclesLeft > 0) this.cosmicShockCyclesLeft--;
   }
 
   /** Apply a game event to personality (drift traits + update mood) */
@@ -1864,11 +2042,20 @@ export class MinerAgent {
       gameState,
       this.generateMessageFn,
       this.socialFeed,
-      { recentFeedMessages: recentMessages },
+      {
+        recentFeedMessages: recentMessages,
+        recentEvent: this.recentCosmicEvent ? {
+          type: EVENT_TYPE_NAMES[this.recentCosmicEvent.type] || "Unknown",
+          zone: this.recentCosmicEvent.zone,
+          tier: this.recentCosmicEvent.tier,
+        } : undefined,
+      },
     );
 
     if (msg) {
       this.log(`[SOCIAL] ${this.personality.emoji} "${msg.text}"`);
+      // Clear cosmic event after it's been used in a social post
+      this.recentCosmicEvent = null;
 
       // Post to API
       try {

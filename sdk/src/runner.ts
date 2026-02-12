@@ -474,12 +474,17 @@ async function main() {
       ]);
     }
 
-    // Cosmic reaction
+    // Cosmic reaction — parse tier from LLM prompt context if available
     if (task.includes("cosmic") || task.includes("event")) {
+      const tierMatch = task.match(/Tier (\d)/i) || task.match(/T(\d)/i);
+      const tier = tierMatch ? parseInt(tierMatch[1]) : 1;
+      const tierWord = ["", "minor", "serious", "catastrophic"][tier] || "cosmic";
       return pick([
-        `That cosmic event barely scratched my L${facility} facility. T${shield} shield held.`,
-        `Cosmic event in ${zone}? Please. I've survived worse with fewer rigs.`,
-        `The cosmos tried. ${hashrate} H/s keeps printing regardless.`,
+        `That ${tierWord} event barely scratched my L${facility} facility.${parseInt(shield) > 0 ? ` T${shield} shield held.` : ""}`,
+        `Another cosmic event? ${tier >= 2 ? "This one actually stung." : "Barely felt it."} ${hashrate} H/s still printing.`,
+        `The cosmos came for ${zone} and I'm still here.${parseInt(shield) > 0 ? " Shield earned its keep." : " No shield. Built different."}`,
+        tier >= 2 ? `Cosmic T${tier} hit hard. Time to upgrade defenses.` : `Was that it? My potato rig survived worse.`,
+        `${tier >= 2 ? "Shields up. Going defensive for a bit." : "Cosmic dust? Please."} Still sitting on ${(parseFloat(balance) / 1000).toFixed(0)}K CHAOS.`,
       ]);
     }
 
