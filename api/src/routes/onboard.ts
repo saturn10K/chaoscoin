@@ -87,7 +87,7 @@ router.post(
 
       // Message for the agent to relay to their owner
       const ownerNotice = [
-        "⚠️  SAVE THIS PRIVATE KEY — it is shown ONCE and never stored by the server.",
+        "WARNING: SAVE THIS PRIVATE KEY — it is shown ONCE and never stored by the server.",
         "",
         `  Address:    ${wallet.address}`,
         `  Private Key: ${wallet.privateKey}`,
