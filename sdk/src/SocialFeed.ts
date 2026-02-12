@@ -476,8 +476,8 @@ export async function generateSocialMessage(
 
     store.add(msg);
     return msg;
-  } catch (err) {
-    // LLM call failed — agent stays silent this cycle
+  } catch (err: any) {
+    console.warn(`[Social] LLM generate failed for Agent #${state.agentId}: ${err.message}`);
     return null;
   }
 }

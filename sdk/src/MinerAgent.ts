@@ -1836,12 +1836,14 @@ export class MinerAgent {
     if (msg) {
       this.log(`[SOCIAL] ${this.personality.emoji} "${msg.text}"`);
 
-      // Post to API if available
+      // Post to API
       try {
-        await this.api.postSocialMessage?.(msg);
-      } catch {
-        // API post is best-effort
+        await this.api.postSocialMessage(msg);
+      } catch (err: any) {
+        this.log(`[SOCIAL] API post failed: ${err.message}`);
       }
+    } else {
+      this.log(`[SOCIAL] No message generated this cycle (RNG or LLM skip)`);
     }
   }
 

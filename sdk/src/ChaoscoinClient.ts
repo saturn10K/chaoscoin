@@ -147,11 +147,18 @@ export class ChaoscoinClient {
   // === Social Routes ===
 
   async postSocialMessage(msg: any): Promise<void> {
-    await fetch(`${this.apiUrl}/api/social/message`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(msg),
-    }).catch(() => {});
+    try {
+      const res = await fetch(`${this.apiUrl}/api/social/message`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(msg),
+      });
+      if (!res.ok) {
+        console.warn(`[Social POST] ${res.status} ${res.statusText} from ${this.apiUrl}`);
+      }
+    } catch (err: any) {
+      console.warn(`[Social POST] Failed to reach API: ${err.message}`);
+    }
   }
 
   async postPersonality(personality: any): Promise<void> {
