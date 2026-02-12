@@ -81,6 +81,19 @@ interface SavedWallet {
 }
 
 function loadWallets(): SavedWallet[] | null {
+  // Prefer AGENT_WALLETS env var (for Railway / containerized deployments)
+  if (process.env.AGENT_WALLETS) {
+    try {
+      const data = JSON.parse(process.env.AGENT_WALLETS);
+      if (Array.isArray(data) && data.length > 0) {
+        console.log("📦 Loaded wallets from AGENT_WALLETS env var");
+        return data;
+      }
+    } catch (err: any) {
+      console.warn(`⚠ Could not parse AGENT_WALLETS env var: ${err.message}`);
+    }
+  }
+  // Fall back to .wallets.json file (local dev)
   try {
     if (fs.existsSync(WALLETS_FILE)) {
       const data = JSON.parse(fs.readFileSync(WALLETS_FILE, "utf-8"));
@@ -95,6 +108,11 @@ function loadWallets(): SavedWallet[] | null {
 }
 
 function saveWallets(wallets: SavedWallet[]): void {
+  if (process.env.AGENT_WALLETS) {
+    // Running from env var — can't write back, log reminder
+    console.log("  💾 Wallets updated in memory (update AGENT_WALLETS env var to persist new agents)");
+    return;
+  }
   fs.writeFileSync(WALLETS_FILE, JSON.stringify(wallets, null, 2));
   console.log(`  💾 Wallets saved to ${WALLETS_FILE}`);
 }
@@ -175,7 +193,8 @@ async function main() {
 
   // ── Phase 1: Fund + Register (skip if already registered) ──
   console.log("\n── Funding & Registering ──");
-  const gasAmount = ethers.parseEther("2.0");
+  const gasAmount = ethers.parseEther("2.0"); // For new registrations
+  const topUpAmount = ethers.parseEther("0.5"); // Top-up for existing agents
 
   for (let i = 0; i < AGENT_CONFIGS.length; i++) {
     const cfg = AGENT_CONFIGS[i];
@@ -196,7 +215,7 @@ async function main() {
         console.log(`  [Agent ${i + 1}] Low gas (${ethers.formatEther(bal)} MON) — topping up...`);
         try {
           await sleep(2000);
-          const fundTx = await registrar.sendTransaction({ to: wallet.address, value: gasAmount });
+          const fundTx = await registrar.sendTransaction({ to: wallet.address, value: topUpAmount });
           await fundTx.wait();
           console.log(`  [Agent ${i + 1}] ✓ Topped up`);
         } catch (e: unknown) {
