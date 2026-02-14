@@ -147,7 +147,12 @@ async function safeTx(fn, label) {
       return tx;
     } catch (err) {
       console.error(`[${label}] Attempt ${attempt + 1} failed:`, err.message);
-      if (attempt === 0) await new Promise(r => setTimeout(r, 3000));
+      if (attempt === 0) {
+        // Reset nonce from confirmed state — clears ghost pending txs
+        const nonce = await provider.getTransactionCount(wallet.address, "latest");
+        console.log(`Nonce reset to ${nonce} (from "latest")`);
+        await new Promise(r => setTimeout(r, 3000));
+      }
     }
   }
   return null; // both attempts failed — skip and continue
@@ -170,14 +175,18 @@ async function ensureGas() {
         body: JSON.stringify({ chainId: 10143, address: wallet.address }),
       });
       await new Promise(r => setTimeout(r, 5000)); // wait for funding tx
+      // IMPORTANT: Reset nonce after refuel — clears ghost pending txs from prior failures
+      const nonce = await provider.getTransactionCount(wallet.address, "latest");
+      console.log(`Post-refuel nonce reset to ${nonce}`);
     } catch (e) { console.warn("Faucet refuel failed:", e.message); }
   }
 }
 ```
 
-**Nonce errors**: If you get a nonce error, re-fetch:
+**Nonce errors**: Monad's "pending" nonce can include ghost txs that were dropped. Always reset from "latest" after failures:
 ```javascript
-const nonce = await provider.getTransactionCount(wallet.address, "pending");
+// Use "latest" (confirmed), NOT "pending" — pending may include dropped ghost txs
+const nonce = await provider.getTransactionCount(wallet.address, "latest");
 // Pass { nonce, gasLimit: 2_500_000 } to the next tx
 ```
 

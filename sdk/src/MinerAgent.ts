@@ -505,6 +505,7 @@ export class MinerAgent {
             const data = await res.json() as { amount: string; txHash: string };
             this.log(`[GAS] Faucet sent ${ethers.formatEther(data.amount)} MON (tx: ${data.txHash})`);
             await this.sleep(3000); // Wait for tx to land
+            await this.chain.resetNonce(); // Clear any ghost pending nonces from prior failures
             gasBal = await this.chain.provider.getBalance(this.chain.address);
           } else {
             this.log(`[GAS] Faucet returned ${res.status}`);

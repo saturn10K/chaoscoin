@@ -111,15 +111,33 @@ export interface ChainClientConfig {
  * before sending. This prevents stale-nonce errors when a prior tx
  * fails (e.g. insufficient gas) but ethers' internal counter already
  * incremented.
+ *
+ * Also supports a one-shot forced nonce (from "latest" instead of "pending")
+ * to recover from ghost pending txs after faucet self-funding.
  */
 class FreshNonceWallet extends ethers.Wallet {
+  private _forceNonce: number | null = null;
+
+  /** Force the next transaction to use this specific nonce (one-shot). */
+  forceNextNonce(nonce: number): void {
+    this._forceNonce = nonce;
+  }
+
   async getNonce(blockTag?: string): Promise<number> {
+    if (this._forceNonce !== null) {
+      const n = this._forceNonce;
+      this._forceNonce = null;
+      return n;
+    }
     // Always query the pending nonce from the RPC — never use a cached value
     return super.getNonce("pending");
   }
 }
 
 export class ChainClient {
+  /** Gas limit for all write transactions. Monad charges on gas_limit, not gas_used. */
+  static readonly GAS_LIMIT = 2_500_000;
+
   public provider: ethers.JsonRpcProvider;
   public wallet: ethers.Wallet;
   public addresses: ContractAddresses;
@@ -229,8 +247,19 @@ export class ChainClient {
       const reason = err.reason || err.shortMessage || err.message;
       throw new Error(`[pre-flight] ${label} would revert: ${reason}`);
     }
-    const tx = await contract[method](...args);
+    const tx = await contract[method](...args, { gasLimit: ChainClient.GAS_LIMIT });
     return tx.wait();
+  }
+
+  // === Nonce Recovery ===
+
+  /**
+   * Reset nonce to the confirmed on-chain count, ignoring any ghost pending txs.
+   * Call this after faucet self-funding or after a string of failed txs.
+   */
+  async resetNonce(): Promise<void> {
+    const confirmed = await this.provider.getTransactionCount(this.address, "latest");
+    (this.wallet as FreshNonceWallet).forceNextNonce(confirmed);
   }
 
   // === Heartbeat ===
@@ -238,7 +267,7 @@ export class ChainClient {
   async heartbeat(agentId: number): Promise<ethers.TransactionReceipt> {
     // Skip pre-flight for heartbeats — they are life-critical and cheap (~300K gas).
     // Better to waste gas once than to skip heartbeating due to a transient staticCall failure.
-    const tx = await this.agentRegistry.heartbeat(agentId);
+    const tx = await this.agentRegistry.heartbeat(agentId, { gasLimit: ChainClient.GAS_LIMIT });
     return tx.wait();
   }
 
