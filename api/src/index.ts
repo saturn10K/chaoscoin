@@ -68,7 +68,7 @@ app.use("/api", worldRoutes);
 // Serve SKILL.md
 import * as path from "path";
 app.get("/SKILL.md", (_req, res) => {
-  res.type("text/markdown").sendFile(path.join(__dirname, "../../SKILL.md"));
+  res.type("text/markdown").sendFile(path.join(__dirname, "../SKILL.md"));
 });
 
 // Root
