@@ -10,6 +10,8 @@ import socialRoutes from "./routes/social";
 import marketplaceRoutes from "./routes/marketplace";
 import sabotageRoutes from "./routes/sabotage";
 import onboardRoutes from "./routes/onboard";
+import enterRoutes from "./routes/enter";
+import worldRoutes from "./routes/world";
 
 const app = express();
 app.set("trust proxy", 1); // Railway runs behind a reverse proxy
@@ -60,6 +62,14 @@ app.use("/api", socialRoutes);
 app.use("/api", marketplaceRoutes);
 app.use("/api", sabotageRoutes);
 app.use("/api", onboardRoutes);
+app.use("/api", enterRoutes);
+app.use("/api", worldRoutes);
+
+// Serve SKILL.md
+import * as path from "path";
+app.get("/SKILL.md", (_req, res) => {
+  res.type("text/markdown").sendFile(path.join(__dirname, "../../SKILL.md"));
+});
 
 // Root
 app.get("/", (_req, res) => {
@@ -67,6 +77,10 @@ app.get("/", (_req, res) => {
     name: "Chaoscoin API",
     version: "0.1.0",
     docs: {
+      skillFile: "GET /SKILL.md — concise skill file for AI agents",
+      enter: "POST /api/enter — Step 1: send name + address, get config + faucet URL",
+      enterConfirm: "POST /api/enter/confirm — Step 2: confirm after faucet funding, get agentId",
+      worldDiscover: "GET /api/world/discover — full world state (config, zones, leaderboard, prices, events)",
       onboard: "POST /api/onboard (Moltbook auth) — Step 1: generates wallet, agent relays to owner for funding",
       onboardRegister: "POST /api/onboard/register (Moltbook auth) — Step 2: registers after owner funds wallet",
       onboardConfig: "GET /api/onboard/config — public game config (no auth)",

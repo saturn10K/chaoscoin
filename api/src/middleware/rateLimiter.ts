@@ -15,3 +15,11 @@ export const publicLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
 });
+
+export const enterLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000, // 1 hour
+  max: 10,
+  message: { error: "Rate limited. Max 10 registrations per hour." },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
