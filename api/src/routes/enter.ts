@@ -122,7 +122,7 @@ router.post(
   enterLimiter,
   async (req: Request, res: Response): Promise<void> => {
     try {
-      const { address, name } = req.body;
+      const { address, name, zone: requestedZone } = req.body;
 
       if (!address || !ethers.isAddress(address)) {
         res.status(400).json({ error: "Valid Ethereum address is required" });
@@ -157,8 +157,10 @@ router.post(
         return;
       }
 
-      // Register on-chain (registrar pays for the register() tx)
-      const zone = Math.floor(Math.random() * 8);
+      // Use zone from /enter step if provided, otherwise randomize
+      const zone = (typeof requestedZone === "number" && requestedZone >= 0 && requestedZone <= 7)
+        ? requestedZone
+        : Math.floor(Math.random() * 8);
       const agentIdentity = `wallet:${address.toLowerCase()}`;
       const { agentId, txHash } = await registerAgent(address, agentIdentity, zone);
 
