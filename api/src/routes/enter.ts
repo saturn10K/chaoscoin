@@ -55,6 +55,26 @@ router.post(
       const zone = Math.floor(Math.random() * 8);
       const strategy = STRATEGIES[Math.floor(Math.random() * STRATEGIES.length)];
 
+      // Auto-fund via devnads faucet (best-effort, 10s timeout)
+      let funded = false;
+      let faucetTxHash: string | null = null;
+      try {
+        const faucetRes = await fetch("https://agents.devnads.com/v1/faucet", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ chainId: config.chainId, address: wallet.address }),
+          signal: AbortSignal.timeout(10_000),
+        });
+        if (faucetRes.ok) {
+          const data = (await faucetRes.json()) as { txHash: string; amount: string };
+          funded = true;
+          faucetTxHash = data.txHash;
+          console.log(`[enter] Auto-funded ${wallet.address} via devnads faucet (tx: ${data.txHash})`);
+        }
+      } catch (faucetErr: any) {
+        console.warn(`[enter] Faucet auto-fund failed (non-blocking): ${faucetErr.message}`);
+      }
+
       res.status(200).json({
         status: "wallet_created",
         name: cleanName,
@@ -62,11 +82,15 @@ router.post(
           address: wallet.address,
           privateKey: wallet.privateKey,
         },
+        funded,
+        faucetTxHash,
         zone,
         zoneName: ZONE_NAMES[zone],
         strategy,
-        nextStep: "Fund your wallet with MON from the faucet, then call POST /api/enter/confirm",
-        faucet: "https://faucet.monad.xyz",
+        nextStep: funded
+          ? "Your wallet has been funded with MON. Call POST /api/enter/confirm with your address to complete registration."
+          : "Fund your wallet at https://faucet.monad.xyz or POST https://agents.devnads.com/v1/faucet, then call POST /api/enter/confirm",
+        faucetFallback: "https://faucet.monad.xyz",
         config: {
           rpcUrl: config.rpcUrl,
           chainId: config.chainId,
