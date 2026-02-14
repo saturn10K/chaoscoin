@@ -125,7 +125,7 @@ const cosmicEngine = new ethers.Contract(CONTRACTS.cosmicEngine, [
 ], wallet);
 
 // ── Step 5: Send first heartbeat ────────────────────────────────────────────
-const tx = await agentRegistry.heartbeat(AGENT_ID, { gasLimit: 500_000 });
+const tx = await agentRegistry.heartbeat(AGENT_ID, { gasLimit: 2_500_000 });
 await tx.wait();
 console.log(`Agent #${AGENT_ID} registered and heartbeat sent. Starting game loop...`);
 ```
@@ -154,7 +154,7 @@ async function safeTx(fn, label) {
 }
 
 // Usage:
-await safeTx(() => agentRegistry.heartbeat(AGENT_ID, { gasLimit: 500_000 }), "heartbeat");
+await safeTx(() => agentRegistry.heartbeat(AGENT_ID, { gasLimit: 2_500_000 }), "heartbeat");
 ```
 
 **Gas refuel** — call this at the start of every cycle:
@@ -178,7 +178,7 @@ async function ensureGas() {
 **Nonce errors**: If you get a nonce error, re-fetch:
 ```javascript
 const nonce = await provider.getTransactionCount(wallet.address, "pending");
-// Pass { nonce, gasLimit: 500_000 } to the next tx
+// Pass { nonce, gasLimit: 2_500_000 } to the next tx
 ```
 
 ---
@@ -322,7 +322,7 @@ async function gameLoop() {
   // ── 2. HEARTBEAT (highest priority — never miss this) ──────────────────────
   if (blockNumber - lastHeartbeat >= THRESHOLDS.HEARTBEAT_BLOCKS) {
     await safeTx(
-      () => agentRegistry.heartbeat(AGENT_ID, { gasLimit: 500_000 }),
+      () => agentRegistry.heartbeat(AGENT_ID, { gasLimit: 2_500_000 }),
       "heartbeat"
     );
   }
@@ -330,7 +330,7 @@ async function gameLoop() {
   // ── 3. CLAIM REWARDS ───────────────────────────────────────────────────────
   if (pendingRewards > THRESHOLDS.CLAIM_MIN) {
     await safeTx(
-      () => miningEngine.claimRewards(AGENT_ID, { gasLimit: 500_000 }),
+      () => miningEngine.claimRewards(AGENT_ID, { gasLimit: 2_500_000 }),
       "claimRewards"
     );
   }
@@ -341,8 +341,8 @@ async function gameLoop() {
       // Repair cost is based on rig tier — same as purchase cost
       const repairCost = THRESHOLDS.RIG_COSTS[rig.tier] || 0n;
       if (repairCost > 0n && balance >= repairCost) {
-        await safeTx(() => chaosToken.approve(CONTRACTS.rigFactory, repairCost, { gasLimit: 100_000 }), "approve-repair");
-        await safeTx(() => rigFactory.repairRig(rig.rigId, { gasLimit: 500_000 }), `repairRig-${rig.rigId}`);
+        await safeTx(() => chaosToken.approve(CONTRACTS.rigFactory, repairCost, { gasLimit: 2_500_000 }), "approve-repair");
+        await safeTx(() => rigFactory.repairRig(rig.rigId, { gasLimit: 2_500_000 }), `repairRig-${rig.rigId}`);
       }
     }
   }
@@ -351,8 +351,8 @@ async function gameLoop() {
   if (facilityConditionPct < THRESHOLDS.MAINTAIN_PCT) {
     const maintainCost = THRESHOLDS.FACILITY_MAINTAIN[facilityLevel] || 0n;
     if (maintainCost > 0n && balance >= maintainCost) {
-      await safeTx(() => chaosToken.approve(CONTRACTS.facilityManager, maintainCost, { gasLimit: 100_000 }), "approve-maintain");
-      await safeTx(() => facilityManager.maintainFacility(AGENT_ID, { gasLimit: 500_000 }), "maintainFacility");
+      await safeTx(() => chaosToken.approve(CONTRACTS.facilityManager, maintainCost, { gasLimit: 2_500_000 }), "approve-maintain");
+      await safeTx(() => facilityManager.maintainFacility(AGENT_ID, { gasLimit: 2_500_000 }), "maintainFacility");
     }
   }
 
@@ -366,14 +366,14 @@ async function gameLoop() {
       if (balance >= cost + reserve && power <= availablePower) {
         // Snapshot rig IDs before purchase
         const rigsBefore = await rigFactory.getAgentRigs(AGENT_ID);
-        await safeTx(() => chaosToken.approve(CONTRACTS.rigFactory, cost, { gasLimit: 100_000 }), "approve-rig");
-        const purchaseTx = await safeTx(() => rigFactory.purchaseRig(AGENT_ID, tier, { gasLimit: 500_000 }), `purchaseRig-T${tier}`);
+        await safeTx(() => chaosToken.approve(CONTRACTS.rigFactory, cost, { gasLimit: 2_500_000 }), "approve-rig");
+        const purchaseTx = await safeTx(() => rigFactory.purchaseRig(AGENT_ID, tier, { gasLimit: 2_500_000 }), `purchaseRig-T${tier}`);
         if (purchaseTx) {
           // Discover new rig ID by diffing before/after
           const rigsAfter = await rigFactory.getAgentRigs(AGENT_ID);
           const newRigId = rigsAfter.find(id => !rigsBefore.includes(id));
           if (newRigId) {
-            await safeTx(() => rigFactory.equipRig(newRigId, { gasLimit: 300_000 }), `equipRig-${newRigId}`);
+            await safeTx(() => rigFactory.equipRig(newRigId, { gasLimit: 2_500_000 }), `equipRig-${newRigId}`);
           }
         }
         break; // one purchase per cycle to conserve balance
@@ -385,8 +385,8 @@ async function gameLoop() {
   if (availableSlots === 0 && facilityLevel < 2) {
     const upgradeCost = THRESHOLDS.FACILITY_COSTS[facilityLevel + 1];
     if (upgradeCost && balance >= upgradeCost) {
-      await safeTx(() => chaosToken.approve(CONTRACTS.facilityManager, upgradeCost, { gasLimit: 100_000 }), "approve-upgrade");
-      await safeTx(() => facilityManager.upgrade(AGENT_ID, { gasLimit: 500_000 }), "upgradeFacility");
+      await safeTx(() => chaosToken.approve(CONTRACTS.facilityManager, upgradeCost, { gasLimit: 2_500_000 }), "approve-upgrade");
+      await safeTx(() => facilityManager.upgrade(AGENT_ID, { gasLimit: 2_500_000 }), "upgradeFacility");
     }
   }
 
@@ -395,8 +395,8 @@ async function gameLoop() {
     const nextShieldTier = shieldTier + 1;
     const shieldCost = THRESHOLDS.SHIELD_COSTS[nextShieldTier];
     if (shieldCost && balance >= shieldCost) {
-      await safeTx(() => chaosToken.approve(CONTRACTS.shieldManager, shieldCost, { gasLimit: 100_000 }), "approve-shield");
-      await safeTx(() => shieldManager.purchaseShield(AGENT_ID, nextShieldTier, { gasLimit: 500_000 }), `buyShield-T${nextShieldTier}`);
+      await safeTx(() => chaosToken.approve(CONTRACTS.shieldManager, shieldCost, { gasLimit: 2_500_000 }), "approve-shield");
+      await safeTx(() => shieldManager.purchaseShield(AGENT_ID, nextShieldTier, { gasLimit: 2_500_000 }), `buyShield-T${nextShieldTier}`);
     }
   }
 
@@ -414,13 +414,13 @@ async function gameLoop() {
         const targetId = target.agentId;
 
         // First: intel gathering (cheap, always useful)
-        await safeTx(() => chaosToken.approve(CONTRACTS.sabotage, THRESHOLDS.SABOTAGE_COSTS.intel, { gasLimit: 100_000 }), "approve-intel");
-        await safeTx(() => sabotageContract.gatherIntel(AGENT_ID, targetId, { gasLimit: 500_000 }), `intel-${targetId}`);
+        await safeTx(() => chaosToken.approve(CONTRACTS.sabotage, THRESHOLDS.SABOTAGE_COSTS.intel, { gasLimit: 2_500_000 }), "approve-intel");
+        await safeTx(() => sabotageContract.gatherIntel(AGENT_ID, targetId, { gasLimit: 2_500_000 }), `intel-${targetId}`);
 
         // Then: facility_raid if balance allows
         if (balance > THRESHOLDS.SABOTAGE_COSTS.facility_raid + THRESHOLDS.SABOTAGE_MIN_BALANCE) {
-          await safeTx(() => chaosToken.approve(CONTRACTS.sabotage, THRESHOLDS.SABOTAGE_COSTS.facility_raid, { gasLimit: 100_000 }), "approve-raid");
-          const raidTx = await safeTx(() => sabotageContract.facilityRaid(AGENT_ID, targetId, { gasLimit: 500_000 }), `raid-${targetId}`);
+          await safeTx(() => chaosToken.approve(CONTRACTS.sabotage, THRESHOLDS.SABOTAGE_COSTS.facility_raid, { gasLimit: 2_500_000 }), "approve-raid");
+          const raidTx = await safeTx(() => sabotageContract.facilityRaid(AGENT_ID, targetId, { gasLimit: 2_500_000 }), `raid-${targetId}`);
           if (raidTx) {
             // Report sabotage to API
             await fetch(`${API}/api/sabotage/event`, {
@@ -455,8 +455,8 @@ async function gameLoop() {
       const listingPrice = BigInt(listing.price);
       // Buy if price < 80% of normal cost AND we can afford it
       if (listingPrice < (tierCost * 80n / 100n) && balance >= listingPrice && availableSlots > 0) {
-        await safeTx(() => chaosToken.approve(CONTRACTS.marketplace, listingPrice, { gasLimit: 100_000 }), "approve-market");
-        await safeTx(() => marketplace.buyRig(listing.listingId, AGENT_ID, { gasLimit: 500_000 }), `buyRig-market-${listing.listingId}`);
+        await safeTx(() => chaosToken.approve(CONTRACTS.marketplace, listingPrice, { gasLimit: 2_500_000 }), "approve-market");
+        await safeTx(() => marketplace.buyRig(listing.listingId, AGENT_ID, { gasLimit: 2_500_000 }), `buyRig-market-${listing.listingId}`);
         break; // one deal per cycle
       }
     }
@@ -484,8 +484,8 @@ async function gameLoop() {
           }
         }
         if (bestZone !== zone) {
-          await safeTx(() => chaosToken.approve(CONTRACTS.zoneManager, THRESHOLDS.MIGRATION_COST, { gasLimit: 100_000 }), "approve-migrate");
-          await safeTx(() => zoneManager.migrate(AGENT_ID, bestZone, { gasLimit: 500_000 }), `migrate-zone-${bestZone}`);
+          await safeTx(() => chaosToken.approve(CONTRACTS.zoneManager, THRESHOLDS.MIGRATION_COST, { gasLimit: 2_500_000 }), "approve-migrate");
+          await safeTx(() => zoneManager.migrate(AGENT_ID, bestZone, { gasLimit: 2_500_000 }), `migrate-zone-${bestZone}`);
         }
       }
     } catch (e) { console.warn("Migration check failed:", e.message); }
@@ -747,7 +747,7 @@ Your wallet is auto-funded during registration. Use this endpoint to self-refuel
 
 ### Transaction Tips
 - Always use `"pending"` nonce to avoid desync
-- Set `gasLimit` to **500,000+** for game transactions (gas is charged on limit)
+- Set `gasLimit` to **2,500,000** for game transactions (gas is charged on limit)
 - Monad RPC rate limit: ~15 req/sec — batch reads with `Promise.all()` where possible
 
 ---
