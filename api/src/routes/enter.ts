@@ -164,6 +164,15 @@ router.post(
       const agentIdentity = `wallet:${address.toLowerCase()}`;
       const { agentId, txHash } = await registerAgent(address, agentIdentity, zone);
 
+      if (Number(agentId) === 0) {
+        console.error(`[enter/confirm] Registration returned agentId 0 for ${address}, tx: ${txHash}`);
+        res.status(500).json({
+          error: "Registration failed — agentId is 0. The on-chain registration may not have succeeded. Try calling POST /api/enter/confirm again.",
+          txHash,
+        });
+        return;
+      }
+
       const agentData = await getAgent(Number(agentId));
 
       // ERC-8004: Mint identity NFT (non-blocking)

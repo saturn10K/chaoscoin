@@ -187,28 +187,60 @@ export async function registerAgent(
   );
   const receipt = await tx.wait();
 
+  if (!receipt || receipt.status === 0) {
+    throw new Error(`Register transaction failed: ${receipt?.hash}`);
+  }
+
   // Parse AgentRegistered event
   const iface = new ethers.Interface(AGENT_REGISTRY_ABI.concat([
     "event AgentRegistered(uint256 indexed agentId, address indexed operator, bytes32 moltbookIdHash, uint8 zone, uint8 pioneerPhase)",
   ]));
+
+  console.log(`[registerAgent] TX: ${receipt.hash}, logs: ${receipt.logs.length}`);
+
   const log = receipt.logs.find((l: ethers.Log) => {
     try {
-      iface.parseLog({ topics: l.topics as string[], data: l.data });
-      return true;
+      const parsed = iface.parseLog({ topics: l.topics as string[], data: l.data });
+      return parsed?.name === "AgentRegistered";
     } catch {
       return false;
     }
   });
 
-  let agentId = 0n;
-  if (log) {
-    const parsed = iface.parseLog({
-      topics: log.topics as string[],
-      data: log.data,
-    });
-    agentId = parsed?.args[0] ?? 0n;
+  if (!log) {
+    console.error(`[registerAgent] AgentRegistered event not found in tx ${receipt.hash}. Logs:`, receipt.logs.map((l: ethers.Log) => l.topics[0]));
+
+    // Fallback: query on-chain for the agentId by operator address
+    console.log(`[registerAgent] Falling back to on-chain lookup for operator ${operatorAddress}`);
+    const fallbackId = await getAgentByOperator(operatorAddress);
+    if (fallbackId > 0) {
+      console.log(`[registerAgent] Fallback found agentId: ${fallbackId}`);
+      return { agentId: BigInt(fallbackId), txHash: receipt.hash };
+    }
+
+    throw new Error(`AgentRegistered event not found and on-chain lookup failed for tx ${receipt.hash}`);
   }
 
+  const parsed = iface.parseLog({
+    topics: log.topics as string[],
+    data: log.data,
+  });
+  const agentId = parsed?.args[0] ?? 0n;
+
+  if (agentId === 0n) {
+    console.error(`[registerAgent] Parsed agentId is 0 from event in tx ${receipt.hash}`);
+
+    // Fallback: query on-chain
+    const fallbackId = await getAgentByOperator(operatorAddress);
+    if (fallbackId > 0) {
+      console.log(`[registerAgent] Fallback found agentId: ${fallbackId}`);
+      return { agentId: BigInt(fallbackId), txHash: receipt.hash };
+    }
+
+    throw new Error(`Invalid agentId 0 from event and on-chain lookup failed for tx ${receipt.hash}`);
+  }
+
+  console.log(`[registerAgent] Successfully registered agent #${agentId} for ${operatorAddress}`);
   return { agentId, txHash: receipt.hash };
 }
 
