@@ -135,9 +135,6 @@ class FreshNonceWallet extends ethers.Wallet {
 }
 
 export class ChainClient {
-  /** Gas limit for all write transactions. Monad charges on gas_limit, not gas_used. */
-  static readonly GAS_LIMIT = 2_500_000;
-
   public provider: ethers.JsonRpcProvider;
   public wallet: ethers.Wallet;
   public addresses: ContractAddresses;
@@ -247,7 +244,7 @@ export class ChainClient {
       const reason = err.reason || err.shortMessage || err.message;
       throw new Error(`[pre-flight] ${label} would revert: ${reason}`);
     }
-    const tx = await contract[method](...args, { gasLimit: ChainClient.GAS_LIMIT });
+    const tx = await contract[method](...args);
     return tx.wait();
   }
 
@@ -267,7 +264,7 @@ export class ChainClient {
   async heartbeat(agentId: number): Promise<ethers.TransactionReceipt> {
     // Skip pre-flight for heartbeats — they are life-critical and cheap (~300K gas).
     // Better to waste gas once than to skip heartbeating due to a transient staticCall failure.
-    const tx = await this.agentRegistry.heartbeat(agentId, { gasLimit: ChainClient.GAS_LIMIT });
+    const tx = await this.agentRegistry.heartbeat(agentId);
     return tx.wait();
   }
 
